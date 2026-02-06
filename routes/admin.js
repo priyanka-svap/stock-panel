@@ -1,0 +1,770 @@
+// routes/admin.js - Complete Admin Panel
+const express = require('express');
+const router = express.Router();
+const jwt = require('jsonwebtoken');
+const Admin = require('../models/Admin');
+const User = require('../models/User');
+const Stock = require('../models/Stock');
+const Index = require('../models/Index');
+const Order = require('../models/Order');
+const Position = require('../models/Position');
+const Holding = require('../models/Holding');
+const Transaction = require('../models/Transaction');
+const { adminAuth, checkPermission, requireSuperAdmin } = require('../middleware/adminAuth');
+const { updateStockPrice, updateIndexPrice } = require('../services/liveDataService');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+
+// ============================================
+// ADMIN AUTHENTICATION
+// ============================================
+
+// Admin Login
+router.post('/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    if (!username || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username and password required'
+      });
+    }
+    
+    const admin = await Admin.findOne({ username: username.toLowerCase() });
+    
+    if (!admin) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+    
+    if (!admin.isActive) {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin account is inactive'
+      });
+    }
+    
+    const isMatch = await admin.comparePassword(password);
+    
+    if (!isMatch) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+    
+    // Update last login
+    admin.lastLogin = new Date();
+    await admin.save();
+    
+    // Generate admin token
+    const token = jwt.sign(
+      { 
+        adminId: admin._id, 
+        username: admin.username,
+        role: admin.role,
+        isAdmin: true
+      },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+    
+    res.json({
+      success: true,
+      message: 'Admin login successful',
+      data: {
+        token,
+        admin: {
+          id: admin._id,
+          username: admin.username,
+          email: admin.email,
+          fullName: admin.fullName,
+          role: admin.role,
+          permissions: admin.permissions
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Login error',
+      error: error.message
+    });
+  }
+});
+
+// Get Admin Profile
+router.get('/profile', adminAuth, async (req, res) => {
+  try {
+    const admin = await Admin.findById(req.admin.adminId).select('-password');
+    res.json({ success: true, data: admin });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ============================================
+// DASHBOARD & ANALYTICS
+// ============================================
+
+// Get Dashboard Statistics
+router.get('/dashboard/stats', adminAuth, checkPermission('canViewAnalytics'), async (req, res) => {
+  try {
+    const [
+      totalUsers,
+      activeUsers,
+      totalStocks,
+      totalOrders,
+      pendingOrders,
+      completedOrders,
+      totalHoldings,
+      totalPositions,
+      totalTransactions
+    ] = await Promise.all([
+      User.countDocuments(),
+      User.countDocuments({ isActive: true }),
+      Stock.countDocuments({ isActive: true }),
+      Order.countDocuments(),
+      Order.countDocuments({ status: 'PENDING' }),
+      Order.countDocuments({ status: 'COMPLETED' }),
+      Holding.countDocuments(),
+      Position.countDocuments({ isOpen: true }),
+      Transaction.countDocuments()
+    ]);
+    
+    // Calculate total trading volume
+    const orders = await Order.find({ status: 'COMPLETED' });
+    const totalVolume = orders.reduce((sum, order) => sum + order.netAmount, 0);
+    
+    res.json({
+      success: true,
+      data: {
+        users: {
+          total: totalUsers,
+          active: activeUsers,
+          inactive: totalUsers - activeUsers
+        },
+        stocks: {
+          total: totalStocks
+        },
+        orders: {
+          total: totalOrders,
+          pending: pendingOrders,
+          completed: completedOrders,
+          cancelled: totalOrders - (pendingOrders + completedOrders)
+        },
+        holdings: {
+          total: totalHoldings
+        },
+        positions: {
+          open: totalPositions
+        },
+        transactions: {
+          total: totalTransactions
+        },
+        trading: {
+          totalVolume: parseFloat(totalVolume.toFixed(2))
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Get Recent Activity
+router.get('/dashboard/activity', adminAuth, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 20;
+    
+    const [recentOrders, recentTransactions, recentUsers] = await Promise.all([
+      Order.find().sort({ createdAt: -1 }).limit(limit).populate('userId', 'username fullName'),
+      Transaction.find().sort({ createdAt: -1 }).limit(limit).populate('userId', 'username fullName'),
+      User.find().sort({ createdAt: -1 }).limit(limit).select('-password')
+    ]);
+    
+    res.json({
+      success: true,
+      data: {
+        recentOrders,
+        recentTransactions,
+        recentUsers
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ============================================
+// USER MANAGEMENT
+// ============================================
+
+// Get All Users
+router.get('/users', adminAuth, checkPermission('canManageUsers'), async (req, res) => {
+  try {
+    const { page = 1, limit = 20, search = '', status } = req.query;
+    
+    const query = {};
+    
+    if (search) {
+      query.$or = [
+        { username: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { fullName: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    if (status) {
+      query.isActive = status === 'active';
+    }
+    
+    const users = await User.find(query)
+      .select('-password')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
+    
+    const total = await User.countDocuments(query);
+    
+    res.json({
+      success: true,
+      data: users,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Get Single User Details
+router.get('/users/:userId', adminAuth, checkPermission('canManageUsers'), async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId).select('-password');
+    
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Get user's orders, holdings, positions
+    const [orders, holdings, positions, transactions] = await Promise.all([
+      Order.find({ userId: user._id }).sort({ createdAt: -1 }).limit(10),
+      Holding.find({ userId: user._id }),
+      Position.find({ userId: user._id, isOpen: true }),
+      Transaction.find({ userId: user._id }).sort({ createdAt: -1 }).limit(10)
+    ]);
+    
+    res.json({
+      success: true,
+      data: {
+        user,
+        orders,
+        holdings,
+        positions,
+        transactions
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Update User
+router.put('/users/:userId', adminAuth, checkPermission('canManageUsers'), async (req, res) => {
+  try {
+    const { fullName, email, availableBalance, isActive } = req.body;
+    
+    const user = await User.findById(req.params.userId);
+    
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    if (fullName) user.fullName = fullName;
+    if (email) user.email = email;
+    if (availableBalance !== undefined) user.availableBalance = availableBalance;
+    if (isActive !== undefined) user.isActive = isActive;
+    
+    await user.save();
+    
+    res.json({
+      success: true,
+      message: 'User updated successfully',
+      data: user
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Delete User
+router.delete('/users/:userId', adminAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const user = await User.findByIdAndDelete(req.params.userId);
+    
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Delete user's data
+    await Promise.all([
+      Order.deleteMany({ userId: user._id }),
+      Holding.deleteMany({ userId: user._id }),
+      Position.deleteMany({ userId: user._id }),
+      Transaction.deleteMany({ userId: user._id })
+    ]);
+    
+    res.json({
+      success: true,
+      message: 'User and all associated data deleted successfully'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ============================================
+// STOCK MANAGEMENT
+// ============================================
+
+// Get All Stocks
+router.get('/stocks', adminAuth, async (req, res) => {
+  try {
+    const { page = 1, limit = 50, search = '' } = req.query;
+    
+    const query = {};
+    if (search) {
+      query.$or = [
+        { symbol: { $regex: search, $options: 'i' } },
+        { companyName: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    const stocks = await Stock.find(query)
+      .sort({ symbol: 1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
+    
+    const total = await Stock.countDocuments(query);
+    
+    res.json({
+      success: true,
+      data: stocks,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Add New Stock
+router.post('/stocks', adminAuth, checkPermission('canManageStocks'), async (req, res) => {
+  try {
+    const { symbol, companyName, currentPrice, exchange, sector } = req.body;
+    
+    if (!symbol || !companyName || !currentPrice) {
+      return res.status(400).json({
+        success: false,
+        message: 'Symbol, company name, and price required'
+      });
+    }
+    
+    const existingStock = await Stock.findOne({ symbol: symbol.toUpperCase() });
+    if (existingStock) {
+      return res.status(400).json({
+        success: false,
+        message: 'Stock already exists'
+      });
+    }
+    
+    const stock = new Stock({
+      symbol: symbol.toUpperCase(),
+      companyName,
+      currentPrice,
+      previousClose: currentPrice,
+      exchange: exchange || 'NSE',
+      sector: sector || 'Unknown'
+    });
+    
+    await stock.save();
+    
+    res.status(201).json({
+      success: true,
+      message: 'Stock added successfully',
+      data: stock
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Update Stock Price Manually
+router.put('/stocks/:symbol/price', adminAuth, checkPermission('canUpdatePrices'), async (req, res) => {
+  try {
+    const { currentPrice } = req.body;
+    
+    if (!currentPrice || currentPrice <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid price required'
+      });
+    }
+    
+    const stock = await Stock.findOne({ symbol: req.params.symbol.toUpperCase() });
+    
+    if (!stock) {
+      return res.status(404).json({ success: false, message: 'Stock not found' });
+    }
+    
+    stock.previousClose = stock.currentPrice;
+    stock.currentPrice = currentPrice;
+    stock.priceChange = currentPrice - stock.previousClose;
+    stock.percentageChange = ((currentPrice - stock.previousClose) / stock.previousClose) * 100;
+    stock.lastUpdated = new Date();
+    
+    await stock.save();
+    
+    // Broadcast update via WebSocket
+    if (global.io) {
+      global.io.emit('stockUpdate', {
+        symbol: stock.symbol,
+        data: stock,
+        updatedBy: 'admin'
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Stock price updated successfully',
+      data: stock
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Update Stock Details
+router.put('/stocks/:symbol', adminAuth, checkPermission('canManageStocks'), async (req, res) => {
+  try {
+    const stock = await Stock.findOne({ symbol: req.params.symbol.toUpperCase() });
+    
+    if (!stock) {
+      return res.status(404).json({ success: false, message: 'Stock not found' });
+    }
+    
+    const allowedFields = ['companyName', 'sector', 'exchange', 'isActive'];
+    
+    allowedFields.forEach(field => {
+      if (req.body[field] !== undefined) {
+        stock[field] = req.body[field];
+      }
+    });
+    
+    await stock.save();
+    
+    res.json({
+      success: true,
+      message: 'Stock updated successfully',
+      data: stock
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Refresh Stock with Live Data
+router.post('/stocks/:symbol/refresh', adminAuth, checkPermission('canUpdatePrices'), async (req, res) => {
+  try {
+    const result = await updateStockPrice(req.params.symbol.toUpperCase());
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Delete Stock
+router.delete('/stocks/:symbol', adminAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const stock = await Stock.findOneAndDelete({ symbol: req.params.symbol.toUpperCase() });
+    
+    if (!stock) {
+      return res.status(404).json({ success: false, message: 'Stock not found' });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Stock deleted successfully',
+      data: stock
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ============================================
+// INDEX MANAGEMENT
+// ============================================
+
+// Get All Indices
+router.get('/indices', adminAuth, async (req, res) => {
+  try {
+    const indices = await Index.find().sort({ name: 1 });
+    res.json({ success: true, data: indices });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Update Index Price Manually
+router.put('/indices/:name/price', adminAuth, checkPermission('canUpdatePrices'), async (req, res) => {
+  try {
+    const { value } = req.body;
+    
+    if (!value || value <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid value required'
+      });
+    }
+    
+    const index = await Index.findOne({ name: req.params.name.toUpperCase() });
+    
+    if (!index) {
+      return res.status(404).json({ success: false, message: 'Index not found' });
+    }
+    
+    index.previousClose = index.value;
+    index.value = value;
+    index.change = value - index.previousClose;
+    index.percentageChange = ((value - index.previousClose) / index.previousClose) * 100;
+    index.lastUpdated = new Date();
+    
+    await index.save();
+    
+    // Broadcast update
+    if (global.io) {
+      global.io.emit('indexUpdate', {
+        name: index.name,
+        data: index,
+        updatedBy: 'admin'
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Index updated successfully',
+      data: index
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Refresh Index with Live Data
+router.post('/indices/:name/refresh', adminAuth, checkPermission('canUpdatePrices'), async (req, res) => {
+  try {
+    const result = await updateIndexPrice(req.params.name.toUpperCase());
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ============================================
+// ORDER MANAGEMENT
+// ============================================
+
+// Get All Orders
+router.get('/orders', adminAuth, checkPermission('canManageOrders'), async (req, res) => {
+  try {
+    const { page = 1, limit = 50, status, userId } = req.query;
+    
+    const query = {};
+    if (status) query.status = status.toUpperCase();
+    if (userId) query.userId = userId;
+    
+    const orders = await Order.find(query)
+      .populate('userId', 'username fullName email')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
+    
+    const total = await Order.countDocuments(query);
+    
+    res.json({
+      success: true,
+      data: orders,
+      pagination: { total, page: parseInt(page), limit: parseInt(limit) }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Update Order Status
+router.patch('/orders/:orderId/status', adminAuth, checkPermission('canManageOrders'), async (req, res) => {
+  try {
+    const { status } = req.body;
+    
+    if (!['PENDING', 'COMPLETED', 'CANCELLED'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status' });
+    }
+    
+    const order = await Order.findById(req.params.orderId);
+    
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    
+    order.status = status;
+    if (status === 'COMPLETED') order.executedAt = new Date();
+    if (status === 'CANCELLED') order.cancelledAt = new Date();
+    
+    await order.save();
+    
+    res.json({
+      success: true,
+      message: 'Order status updated',
+      data: order
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Delete Order
+router.delete('/orders/:orderId', adminAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const order = await Order.findByIdAndDelete(req.params.orderId);
+    
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Order deleted successfully'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ============================================
+// ADMIN MANAGEMENT (Super Admin Only)
+// ============================================
+
+// Get All Admins
+router.get('/admins', adminAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const admins = await Admin.find().select('-password').sort({ createdAt: -1 });
+    res.json({ success: true, data: admins });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Create New Admin
+router.post('/admins', adminAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const { username, email, password, fullName, role, permissions } = req.body;
+    
+    if (!username || !email || !password || !fullName) {
+      return res.status(400).json({
+        success: false,
+        message: 'All fields required'
+      });
+    }
+    
+    const existingAdmin = await Admin.findOne({ 
+      $or: [{ username }, { email }] 
+    });
+    
+    if (existingAdmin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username or email already exists'
+      });
+    }
+    
+    const admin = new Admin({
+      username,
+      email,
+      password,
+      fullName,
+      role: role || 'admin',
+      permissions: permissions || {}
+    });
+    
+    await admin.save();
+    
+    res.status(201).json({
+      success: true,
+      message: 'Admin created successfully',
+      data: { ...admin.toObject(), password: undefined }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Update Admin
+router.put('/admins/:adminId', adminAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const admin = await Admin.findById(req.params.adminId);
+    
+    if (!admin) {
+      return res.status(404).json({ success: false, message: 'Admin not found' });
+    }
+    
+    const allowedFields = ['fullName', 'email', 'role', 'permissions', 'isActive'];
+    
+    allowedFields.forEach(field => {
+      if (req.body[field] !== undefined) {
+        admin[field] = req.body[field];
+      }
+    });
+    
+    await admin.save();
+    
+    res.json({
+      success: true,
+      message: 'Admin updated successfully',
+      data: { ...admin.toObject(), password: undefined }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Delete Admin
+router.delete('/admins/:adminId', adminAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const admin = await Admin.findByIdAndDelete(req.params.adminId);
+    
+    if (!admin) {
+      return res.status(404).json({ success: false, message: 'Admin not found' });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Admin deleted successfully'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+module.exports = router;

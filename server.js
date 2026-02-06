@@ -58,6 +58,7 @@ const holdingRoutes = require('./routes/holdings');
 const watchlistRoutes = require('./routes/watchlist');
 const fundsRoutes = require('./routes/funds');
 const userRoutes = require('./routes/users');
+const adminRoutes = require('./routes/admin');
 
 // Use Routes
 app.use('/api/auth', authRoutes);
@@ -69,6 +70,7 @@ app.use('/api/holdings', holdingRoutes);
 app.use('/api/watchlist', watchlistRoutes);
 app.use('/api/funds', fundsRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
