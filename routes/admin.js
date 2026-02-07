@@ -280,13 +280,17 @@ router.get('/users/:userId', adminAuth, checkPermission('canManageUsers'), async
 // Update User
 router.put('/users/:userId', adminAuth, checkPermission('canManageUsers'), async (req, res) => {
   try {
-    const { fullName, email, availableBalance, isActive } = req.body;
+    const { fullName, email, availableBalance, isActive, method, notes } = req.body;
     
     const user = await User.findById(req.params.userId);
     
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
+    
+    // Store old balance to check if it changed
+    const oldBalance = user.availableBalance;
+    const isBalanceUpdate = availableBalance !== undefined && availableBalance !== oldBalance;
     
     if (fullName) user.fullName = fullName;
     if (email) user.email = email;
@@ -295,10 +299,34 @@ router.put('/users/:userId', adminAuth, checkPermission('canManageUsers'), async
     
     await user.save();
     
+    // Create transaction record if balance was updated
+    if (isBalanceUpdate) {
+      const balanceDiff = availableBalance - oldBalance;
+      const transactionType = balanceDiff > 0 ? 'DEPOSIT' : 'WITHDRAWAL';
+      const transactionAmount = Math.abs(balanceDiff);
+      
+      // Create transaction record
+      const transaction = new Transaction({
+        userId: user._id,
+        type: transactionType,
+        amount: transactionAmount,
+        method: method || 'ADMIN_ADJUSTMENT',
+        status: 'COMPLETED',
+        description: notes || `Admin ${transactionType.toLowerCase()} - Balance updated from ₹${oldBalance.toFixed(2)} to ₹${availableBalance.toFixed(2)}`,
+        referenceId: `ADMIN-${Date.now()}-${user._id.toString().slice(-6).toUpperCase()}`,
+        completedAt: new Date()
+      });
+      
+      await transaction.save();
+      
+      console.log(`✓ Transaction created: ${transactionType} of ₹${transactionAmount} for user ${user.username}`);
+    }
+    
     res.json({
       success: true,
       message: 'User updated successfully',
-      data: user
+      data: user,
+      transactionCreated: isBalanceUpdate
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -665,6 +693,136 @@ router.delete('/orders/:orderId', adminAuth, requireSuperAdmin, async (req, res)
 // ============================================
 // ADMIN MANAGEMENT (Super Admin Only)
 // ============================================
+
+// Get All Transactions
+router.get('/transactions', adminAuth, checkPermission('canViewAnalytics'), async (req, res) => {
+  try {
+    const { page = 1, limit = 100, type, userId } = req.query;
+    
+    const query = {};
+    if (type) query.type = type.toUpperCase();
+    if (userId) query.userId = userId;
+    
+    const transactions = await Transaction.find(query)
+      .populate('userId', 'username fullName email')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
+    
+    const total = await Transaction.countDocuments(query);
+    
+    res.json({
+      success: true,
+      data: transactions,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching transactions',
+      error: error.message
+    });
+  }
+});
+
+// Get All Holdings
+router.get('/holdings', adminAuth, checkPermission('canViewAnalytics'), async (req, res) => {
+  try {
+    const { page = 1, limit = 100, userId } = req.query;
+    
+    const query = {};
+    if (userId) query.userId = userId;
+    
+    const holdings = await Holding.find(query)
+      .populate('userId', 'username fullName email')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
+    
+    const total = await Holding.countDocuments(query);
+    
+    res.json({
+      success: true,
+      data: holdings,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching holdings',
+      error: error.message
+    });
+  }
+});
+
+// Get All Positions
+router.get('/positions', adminAuth, checkPermission('canViewAnalytics'), async (req, res) => {
+  try {
+    const { page = 1, limit = 100, userId, isOpen = true } = req.query;
+    
+    const query = {};
+    if (userId) query.userId = userId;
+    if (isOpen !== undefined) query.isOpen = isOpen === 'true';
+    
+    const positions = await Position.find(query)
+      .populate('userId', 'username fullName email')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
+    
+    const total = await Position.countDocuments(query);
+    
+    res.json({
+      success: true,
+      data: positions,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching positions',
+      error: error.message
+    });
+  }
+});
+
+// Get All Watchlists (Summary)
+router.get('/watchlists', adminAuth, checkPermission('canViewAnalytics'), async (req, res) => {
+  try {
+    const { userId } = req.query;
+    
+    const query = {};
+    if (userId) query.userId = userId;
+    
+    const watchlists = await Watchlist.find(query)
+      .populate('userId', 'username fullName email')
+      .sort({ createdAt: -1 });
+    
+    res.json({
+      success: true,
+      data: watchlists
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching watchlists',
+      error: error.message
+    });
+  }
+});
 
 // Get All Admins
 router.get('/admins', adminAuth, requireSuperAdmin, async (req, res) => {
