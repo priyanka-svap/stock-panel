@@ -10,6 +10,7 @@ const Order = require('../models/Order');
 const Position = require('../models/Position');
 const Holding = require('../models/Holding');
 const Transaction = require('../models/Transaction');
+const Watchlist = require('../models/Watchlist');
 const { adminAuth, checkPermission, requireSuperAdmin } = require('../middleware/adminAuth');
 const { updateStockPrice, updateIndexPrice } = require('../services/liveDataService');
 
@@ -771,7 +772,7 @@ router.get('/positions', adminAuth, checkPermission('canViewAnalytics'), async (
     
     const query = {};
     if (userId) query.userId = userId;
-    if (isOpen !== undefined) query.isOpen = isOpen === 'true';
+    if (isOpen !== undefined) query.isOpen = isOpen === true;
     
     const positions = await Position.find(query)
       .populate('userId', 'username fullName email')

@@ -34,8 +34,8 @@ const positionSchema = new mongoose.Schema({
     required: true
   },
   totalValue: {
-    type: Number,
-    required: true
+    type: String,
+    //required: true
   },
   pnl: {
     type: Number,
