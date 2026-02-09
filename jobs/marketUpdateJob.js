@@ -11,12 +11,12 @@ function isMarketOpen() {
   const hours = Math.floor(istMinutes / 60) % 24;
   const minutes = istMinutes % 60;
   const currentTime = hours * 60 + minutes;
-  
+
   const marketOpen = 9 * 60 + 15;
   const marketClose = 15 * 60 + 30;
   const day = now.getDay();
   const isWeekday = day >= 1 && day <= 5;
-  
+
   return isWeekday && currentTime >= marketOpen && currentTime <= marketClose;
 }
 
@@ -41,5 +41,44 @@ function startStockUpdateJob() {
   });
   console.log('✅ Stock update job started (every 5 minutes)');
 }
+// Real-time Firebase updates (every 2 seconds)
+let stockUpdateInterval = null;
 
-module.exports = { startIndexUpdateJob, startStockUpdateJob, isMarketOpen };
+function startFirebaseStockUpdates() {
+  if (stockUpdateInterval) {
+    clearInterval(stockUpdateInterval);
+  }
+
+  stockUpdateInterval = setInterval(async () => {
+    if (isMarketOpen()) {
+      console.log('🔥 Firebase: Updating stocks...');
+      const stocks = await Stock.find({ isActive: true }).limit(50);
+      const symbols = stocks.map(s => s.symbol);
+
+      // Update in batches to avoid rate limits
+      const batchSize = 10;
+      for (let i = 0; i < symbols.length; i += batchSize) {
+        const batch = symbols.slice(i, i + batchSize);
+        await updateMultipleStocks(batch);
+      }
+    }
+  }, 2000); // 2 seconds (Firebase handles 1s updates well)
+
+  console.log('✅ Firebase stock updates started (every 2 seconds)');
+}
+
+// Index updates (every 5 seconds)
+function startFirebaseIndexUpdates() {
+  setInterval(async () => {
+    if (isMarketOpen()) {
+      console.log('🔥 Firebase: Updating indices...');
+      await updateAllIndices();
+    }
+  }, 5000);
+
+  console.log('✅ Firebase index updates started (every 5 seconds)');
+}
+module.exports = {
+  startIndexUpdateJob, startStockUpdateJob, isMarketOpen, startFirebaseStockUpdates,
+  startFirebaseIndexUpdates
+};

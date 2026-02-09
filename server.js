@@ -1,19 +1,10 @@
-// server.js - Main Server File
+// server.js - FIREBASE VERSION
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const http = require('http');
-const socketIo = require('socket.io');
 require('dotenv').config();
 
 const app = express();
-const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
-  }
-});
 
 // Middleware
 app.use(cors());
@@ -26,27 +17,6 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/stockPane
 })
 .then(() => console.log('✅ MongoDB Connected Successfully'))
 .catch(err => console.error('❌ MongoDB Connection Error:', err));
-
-// Socket.IO Connection
-io.on('connection', (socket) => {
-  console.log(`🔌 Client connected: ${socket.id}`);
-  
-  socket.on('subscribe', (symbols) => {
-    console.log(`📊 Client ${socket.id} subscribed to:`, symbols);
-    symbols.forEach(symbol => socket.join(symbol));
-  });
-  
-  socket.on('unsubscribe', (symbols) => {
-    symbols.forEach(symbol => socket.leave(symbol));
-  });
-  
-  socket.on('disconnect', () => {
-    console.log(`🔌 Client disconnected: ${socket.id}`);
-  });
-});
-
-// Make io available globally
-global.io = io;
 
 // Import Routes
 const authRoutes = require('./routes/auth');
@@ -77,19 +47,20 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'Server is running', 
     database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected',
+    firebase: 'Connected',
     timestamp: new Date()
   });
 });
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
+app.listen(PORT, () => {
   console.log(`🚀 Stock Panel API running on port ${PORT}`);
-  console.log(`📡 WebSocket server ready`);
+  console.log(`🔥 Firebase Realtime Database ready`);
 });
 
-// Start auto-update jobs
-const { startIndexUpdateJob, startStockUpdateJob } = require('./jobs/marketUpdateJob');
+// Start Firebase auto-update jobs
+const { startFirebaseStockUpdates, startFirebaseIndexUpdates, startIndexUpdateJob, startStockUpdateJob } = require('./jobs/marketUpdateJob');
+startFirebaseStockUpdates();
+startFirebaseIndexUpdates();
 startIndexUpdateJob();
 startStockUpdateJob();
-
-module.exports = { io };
