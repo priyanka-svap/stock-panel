@@ -4,3 +4,4 @@ package-lock.json
 *.log
 .DS_Store
 config/stockpanelapp-firebase-adminsdk-fbsvc-c95b35595f.json
+config/*firebase-adminsdk*.json 
