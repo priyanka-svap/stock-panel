@@ -5,7 +5,7 @@ const serviceAccount = require('../config/firebase-service-account.json');
 // Initialize Firebase Admin
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: process.env.FIREBASE_DATABASE_URL || "https://console.firebase.google.com/project/stockpanelapp/database/stockpanelapp-default-rtdb/data/~2F"
+  databaseURL: process.env.FIREBASE_DATABASE_URL
 });
 
 const db = admin.database();
