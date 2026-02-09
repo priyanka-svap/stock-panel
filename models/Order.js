@@ -1,4 +1,5 @@
-// models/Order.js
+// models/Order.js - CORRECTED VERSION
+
 const mongoose = require('mongoose');
 
 const orderSchema = new mongoose.Schema({
@@ -19,8 +20,32 @@ const orderSchema = new mongoose.Schema({
   orderType: {
     type: String,
     enum: ['BUY', 'SELL'],
-    required: true
+    required: true,
+    uppercase: true
   },
+  
+  // ===================================
+  // ORDER EXECUTION TYPE
+  // ===================================
+  orderMode: {
+    type: String,
+    enum: ['Market', 'Limit', 'SL', 'SL-M'],
+    default: 'Market'
+  },
+  
+  // ===================================
+  // ✨ NEW: PRODUCT TYPE (DELIVERY/INTRADAY)
+  // ===================================
+  productType: {
+    type: String,
+    enum: ['DELIVERY', 'INTRADAY', 'CNC', 'MIS'],
+    default: 'DELIVERY',
+    uppercase: true
+  },
+  // Note: 
+  // - DELIVERY/CNC = Long-term holding
+  // - INTRADAY/MIS = Same-day trading
+  
   quantity: {
     type: Number,
     required: true,
@@ -31,23 +56,13 @@ const orderSchema = new mongoose.Schema({
     required: true,
     min: 0
   },
-  orderMode: {
-    type: String,
-    enum: ['Market', 'Limit', 'SL', 'SL-M'],
-    default: 'Market'
-  },
   stopLoss: {
     type: Number,
-    default: null
+    min: 0
   },
   takeProfit: {
     type: Number,
-    default: null
-  },
-  status: {
-    type: String,
-    enum: ['PENDING', 'COMPLETED', 'CANCELLED', 'REJECTED'],
-    default: 'PENDING'
+    min: 0
   },
   totalAmount: {
     type: Number,
@@ -55,15 +70,21 @@ const orderSchema = new mongoose.Schema({
   },
   brokerage: {
     type: Number,
-    default: 20
+    default: 0
   },
   taxesAndCharges: {
     type: Number,
-    default: 15.50
+    default: 0
   },
   netAmount: {
     type: Number,
     required: true
+  },
+  status: {
+    type: String,
+    enum: ['PENDING', 'COMPLETED', 'CANCELLED', 'REJECTED'],
+    default: 'PENDING',
+    uppercase: true
   },
   executedAt: {
     type: Date
@@ -78,9 +99,9 @@ const orderSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Indexes
-orderSchema.index({ userId: 1, status: 1 });
+// Indexes for faster queries
+orderSchema.index({ userId: 1, createdAt: -1 });
 orderSchema.index({ symbol: 1 });
-orderSchema.index({ createdAt: -1 });
+orderSchema.index({ status: 1 });
 
 module.exports = mongoose.model('Order', orderSchema);

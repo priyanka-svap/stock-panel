@@ -925,5 +925,171 @@ router.delete('/admins/:adminId', adminAuth, requireSuperAdmin, async (req, res)
     res.status(500).json({ success: false, message: error.message });
   }
 });
-
+// Update Order Status
+router.patch('/orders/:orderId/status', adminAuth, checkPermission('canManageOrders'), async (req, res) => {
+  try {
+    const { status } = req.body;
+    
+    if (!['PENDING', 'COMPLETED', 'CANCELLED'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status' });
+    }
+    
+    const order = await Order.findById(req.params.orderId)
+      .populate('userId', 'username fullName email');
+    
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    
+    const oldStatus = order.status;
+    order.status = status;
+    
+    if (status === 'COMPLETED') {
+      order.executedAt = new Date();
+      
+      // ========================================
+      // AUTO-CREATE HOLDING OR POSITION
+      // ========================================
+      
+      if (oldStatus !== 'COMPLETED') {
+        const stock = await Stock.findOne({ symbol: order.symbol });
+        
+        if (stock) {
+          // Normalize productType (CNC/DELIVERY = DELIVERY, MIS/INTRADAY = INTRADAY)
+          const normalizedProductType = ['CNC', 'DELIVERY'].includes(order.productType) ? 'DELIVERY' : 'INTRADAY';
+          
+          console.log(`📊 Processing order: ${order.symbol} (${order.productType} → ${normalizedProductType})`);
+          
+          if (normalizedProductType === 'DELIVERY') {
+            // DELIVERY/CNC → Create/Update HOLDING
+            
+            if (order.orderType === 'BUY') {
+              let holding = await Holding.findOne({
+                userId: order.userId._id,
+                symbol: order.symbol
+              });
+              
+              if (holding) {
+                // Update existing holding
+                console.log(`  ↳ Updating existing holding`);
+                
+                const totalQty = holding.quantity + order.quantity;
+                const totalInvested = (holding.quantity * holding.avgPrice) + (order.quantity * order.price);
+                
+                holding.quantity = totalQty;
+                holding.avgPrice = totalInvested / totalQty;
+                holding.investedValue = totalInvested;
+                holding.currentPrice = stock.currentPrice;
+                holding.currentValue = holding.quantity * holding.currentPrice;
+                holding.totalPnL = holding.currentValue - holding.investedValue;
+                holding.pnlPercentage = (holding.totalPnL / holding.investedValue) * 100;
+                
+                await holding.save();
+                console.log(`  ✓ Holding updated: ${holding.quantity} shares`);
+                
+              } else {
+                // Create new holding
+                console.log(`  ↳ Creating new holding`);
+                
+                const investedValue = order.quantity * order.price;
+                const currentValue = order.quantity * stock.currentPrice;
+                const totalPnL = currentValue - investedValue;
+                const pnlPercentage = (totalPnL / investedValue) * 100;
+                
+                await Holding.create({
+                  userId: order.userId._id,
+                  symbol: order.symbol,
+                  companyName: stock.companyName,
+                  quantity: order.quantity,
+                  avgPrice: order.price,
+                  currentPrice: stock.currentPrice,
+                  investedValue: investedValue,
+                  currentValue: currentValue,
+                  totalPnL: totalPnL,
+                  pnlPercentage: pnlPercentage
+                });
+                
+                console.log(`  ✓ Holding created: ${order.quantity} shares`);
+              }
+              
+            } else if (order.orderType === 'SELL') {
+              // Handle SELL
+              let holding = await Holding.findOne({
+                userId: order.userId._id,
+                symbol: order.symbol
+              });
+              
+              if (holding) {
+                holding.quantity -= order.quantity;
+                
+                if (holding.quantity <= 0) {
+                  await Holding.findByIdAndDelete(holding._id);
+                  console.log(`  ✓ Holding deleted (all sold)`);
+                } else {
+                  holding.investedValue = holding.quantity * holding.avgPrice;
+                  holding.currentPrice = stock.currentPrice;
+                  holding.currentValue = holding.quantity * holding.currentPrice;
+                  holding.totalPnL = holding.currentValue - holding.investedValue;
+                  holding.pnlPercentage = (holding.totalPnL / holding.investedValue) * 100;
+                  await holding.save();
+                  console.log(`  ✓ Holding updated: ${holding.quantity} remaining`);
+                }
+              }
+            }
+          }
+          
+          else if (normalizedProductType === 'INTRADAY') {
+            // INTRADAY/MIS → Create POSITION
+            
+            console.log(`  ↳ Creating intraday position`);
+            
+            let pnl = 0;
+            let pnlPercentage = 0;
+            
+            if (order.orderType === 'BUY') {
+              pnl = (stock.currentPrice - order.price) * order.quantity;
+              pnlPercentage = ((stock.currentPrice - order.price) / order.price) * 100;
+            } else {
+              pnl = (order.price - stock.currentPrice) * order.quantity;
+              pnlPercentage = ((order.price - stock.currentPrice) / stock.currentPrice) * 100;
+            }
+            
+            await Position.create({
+              userId: order.userId._id,
+              symbol: order.symbol,
+              companyName: stock.companyName,
+              type: order.orderType,
+              quantity: order.quantity,
+              avgPrice: order.price,
+              currentPrice: stock.currentPrice,
+              pnl: pnl,
+              pnlPercentage: pnlPercentage,
+              isOpen: true
+            });
+            
+            console.log(`  ✓ Position created: ${order.orderType} ${order.quantity} @ ₹${order.price}`);
+          }
+          
+        } else {
+          console.warn(`  ⚠ Stock not found: ${order.symbol}`);
+        }
+      }
+    }
+    
+    if (status === 'CANCELLED') {
+      order.cancelledAt = new Date();
+    }
+    
+    await order.save();
+    
+    res.json({
+      success: true,
+      message: `Order ${status.toLowerCase()} successfully`,
+      data: order
+    });
+  } catch (error) {
+    console.error('❌ Error updating order:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 module.exports = router;
