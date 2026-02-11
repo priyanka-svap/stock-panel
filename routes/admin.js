@@ -28,11 +28,11 @@ router.post('/login', async (req, res) => {
     if (!username || !password) {
       return res.status(400).json({
         success: false,
-        message: 'Username and password required'
+        message: 'username and password required'
       });
     }
     
-    const admin = await Admin.findOne({ username: username.toLowerCase() });
+    const admin = await Admin.findOne({ username: username });
     
     if (!admin) {
       return res.status(401).json({

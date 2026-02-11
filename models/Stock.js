@@ -19,28 +19,28 @@ const stockSchema = new mongoose.Schema({
     default: 'NSE'
   },
   currentPrice: {
-    type: Number,
-    required: true,
-    min: 0
+    type: String,
+   // required: true,
+   // min: 0
   },
   previousClose: {
-    type: Number,
-    default: 0
+    type: String,
+   // default: 0
   },
   priceChange: {
-    type: Number,
+    type: String,
     default: 0
   },
   percentageChange: {
-    type: Number,
+    type: String,
     default: 0
   },
   dayHigh: {
-    type: Number,
+    type: String,
     default: 0
   },
   dayLow: {
-    type: Number,
+    type: String,
     default: 0
   },
   openPrice: {
@@ -48,7 +48,7 @@ const stockSchema = new mongoose.Schema({
    // default: 0
   },
   volume: {
-    type: Number,
+    type: String,
     default: 0
   },
   marketCap: {

@@ -206,34 +206,54 @@ async function fetchLiveIndexPrice(indexName) {
 // ============================================
 // UPDATE STOCK IN DATABASE
 // ============================================
+// async function updateStockPrice(symbol) {
+//   try {
+//     const liveData = await fetchLiveStockPrice(symbol);
+//     if (!liveData) {
+//       return { success: false, message: `Failed for ${symbol}` };
+//     }
+    
+//     const stock = await Stock.findOneAndUpdate(
+//       { symbol: liveData.symbol },
+//       liveData,
+//       { new: true, upsert: true }
+//     );
+    
+//     // Emit WebSocket update
+//     if (global.io) {
+//       global.io.to(stock.symbol).emit('stockUpdate', {
+//         symbol: stock.symbol,
+//         data: stock,
+//         timestamp: new Date()
+//       });
+//     }
+    
+//     return { success: true, data: stock };
+//   } catch (error) {
+//     return { success: false, message: error.message };
+//   }
+// }
+
+// In services/liveDataService.js
+const { updateFirebase } = require('./firebaseService');
+
 async function updateStockPrice(symbol) {
-  try {
-    const liveData = await fetchLiveStockPrice(symbol);
-    if (!liveData) {
+  const liveData = await fetchLiveStockPrice(symbol);
+  if (!liveData) {
       return { success: false, message: `Failed for ${symbol}` };
     }
-    
+     await updateFirebase(`stocks/${symbol}`,liveData)
     const stock = await Stock.findOneAndUpdate(
       { symbol: liveData.symbol },
       liveData,
       { new: true, upsert: true }
     );
-    
-    // Emit WebSocket update
-    if (global.io) {
-      global.io.to(stock.symbol).emit('stockUpdate', {
-        symbol: stock.symbol,
-        data: stock,
-        timestamp: new Date()
-      });
-    }
-    
-    return { success: true, data: stock };
-  } catch (error) {
-    return { success: false, message: error.message };
-  }
+  
+  // 2. Push to Firebase (for real-time sync)
+ 
+  
+  return { success: true };
 }
-
 // ============================================
 // UPDATE INDEX IN DATABASE
 // ============================================
@@ -243,7 +263,7 @@ async function updateIndexPrice(indexName) {
     if (!liveData) {
       return { success: false, message: `Failed for ${indexName}` };
     }
-    
+    await updateFirebase(`indices/${liveData.name }`,liveData)
     const index = await Index.findOneAndUpdate(
       { name: liveData.name },
       liveData,
@@ -251,13 +271,7 @@ async function updateIndexPrice(indexName) {
     );
     
     // Emit WebSocket update
-    if (global.io) {
-      global.io.emit('indexUpdate', {
-        name: index.name,
-        data: index,
-        timestamp: new Date()
-      });
-    }
+ 
     
     return { success: true, data: index };
   } catch (error) {
