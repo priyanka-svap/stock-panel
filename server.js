@@ -28,6 +28,7 @@ app.use('/api/holdings', require('./routes/holdings'));
 app.use('/api/positions', require('./routes/positions'));
 app.use('/api/watchlist', require('./routes/watchlist'));
 app.use('/api/funds', require('./routes/funds'));
+app.use('/api/market', require('./routes/marketDepthRoutes'));
 
 // Health check
 app.get('/health', (req, res) => {

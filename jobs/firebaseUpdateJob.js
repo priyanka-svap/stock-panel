@@ -4,6 +4,10 @@
 const Stock = require('../models/Stock');
 const Index = require('../models/Index');
 const { updateMultipleStocks, updateAllIndices } = require('../services/liveDataService');
+const Quote = require('../models/Quote');
+const MarketDepthService = require('../services/marketDepthService');
+const depthService = new MarketDepthService();
+
 
 // Firebase Database URL
 const FIREBASE_URL = 'https://stockpanelapp-default-rtdb.asia-southeast1.firebasedatabase.app';
@@ -240,9 +244,163 @@ function getMarketStatus() {
     };
 }
 
+
+
+// =====================================================
+// LIVE MARKET DEPTH UPDATE (MongoDB + Firebase)
+// =====================================================
+
+async function updateLiveMarketDepth() {
+    try {
+        const startTime = Date.now();
+        console.log('📊 Fetching live market depth from NSE...');
+        
+        // Step 1: Fetch market depth for all symbols
+        const quotes = await depthService.getMultipleDepth(ACTIVE_SYMBOLS);
+        
+        const successful = quotes.filter(q => !q.error).length;
+        const failed = quotes.filter(q => q.error).length;
+        
+        console.log(`   Fetched: ✅ ${successful} | ❌ ${failed}`);
+        
+        // Step 2: Save to MongoDB in parallel
+        const mongoPromise = batchSaveToMongoDB(quotes);
+        
+        // Step 3: Prepare Firebase batch update
+        const firebaseUpdates = {};
+        
+        quotes.forEach(quote => {
+            if (quote.error) return; // Skip failed quotes
+            
+            firebaseUpdates[`quotes/${quote.symbol}`] = {
+                symbol: quote.symbol,
+                ltp: quote.ltp,
+                open: quote.open,
+                high: quote.high,
+                low: quote.low,
+                close: quote.close,
+                previousClose: quote.previousClose,
+                volume: quote.volume,
+                totalBuyQuantity: quote.totalBuyQuantity,
+                totalSellQuantity: quote.totalSellQuantity,
+                bid: quote.bid,
+                ask: quote.ask,
+                bestBid: quote.bestBid,
+                bestAsk: quote.bestAsk,
+                spread: quote.spread,
+                change: quote.change,
+                percentageChange: quote.percentageChange,
+                lastUpdated: quote.lastUpdated
+            };
+        });
+        
+        // Step 4: Execute MongoDB and Firebase updates in parallel
+        const [mongoResults, firebaseSuccess] = await Promise.all([
+            mongoPromise,
+            batchUpdateFirebase(firebaseUpdates)
+        ]);
+        
+        const mongoSaved = mongoResults.filter(r => r.saved).length;
+        
+        const elapsed = Date.now() - startTime;
+        
+        console.log(`   MongoDB: ✅ ${mongoSaved} saved`);
+        console.log(`   Firebase: ${firebaseSuccess ? '✅ Updated' : '❌ Failed'}`);
+        console.log(`   Time: ⏱️  ${elapsed}ms`);
+        
+        // Log top 3 stocks for verification
+        const topStocks = quotes
+            .filter(q => !q.error)
+            .sort((a, b) => Math.abs(b.percentageChange) - Math.abs(a.percentageChange))
+            .slice(0, 3);
+        
+        console.log('   Top Movers:');
+        topStocks.forEach(s => {
+            const emoji = s.percentageChange >= 0 ? '🟢' : '🔴';
+            console.log(`      ${emoji} ${s.symbol}: ₹${s.ltp.toFixed(2)} (${s.percentageChange >= 0 ? '+' : ''}${s.percentageChange.toFixed(2)}%)`);
+        });
+        
+        return true;
+        
+    } catch (error) {
+        console.error('❌ Market depth update error:', error.message);
+        return false;
+    }
+}
+
+
+// =====================================================
+// BATCH SAVE TO MONGODB
+// =====================================================
+
+async function batchSaveToMongoDB(quotesArray) {
+    const results = [];
+    
+    for (const quote of quotesArray) {
+        if (quote.error) continue; // Skip failed quotes
+        
+        const saved = await saveToMongoDB(quote);
+        results.push({ 
+            symbol: quote.symbol, 
+            saved,
+            ltp: quote.ltp,
+            change: quote.percentageChange
+        });
+    }
+    
+    return results;
+}
+
+async function saveToMongoDB(quoteData) {
+    try {
+        const symbol = quoteData.symbol.replace('.NS', '').replace('.BO', '');
+        
+        // Update or create stock document in MongoDB
+        await Quote.findOneAndUpdate(
+            { symbol: symbol },
+            {
+                $set: {
+                    symbol: symbol,
+                    currentPrice: quoteData.ltp,
+                    openPrice: quoteData.open,
+                    dayHigh: quoteData.high,
+                    dayLow: quoteData.low,
+                    previousClose: quoteData.previousClose,
+                    priceChange: quoteData.change,
+                    percentageChange: quoteData.percentageChange,
+                    volume: quoteData.volume,
+                    totalBuyQuantity: quoteData.totalBuyQuantity,
+                    totalSellQuantity: quoteData.totalSellQuantity,
+                    bestBid: quoteData.bestBid,
+                    bestAsk: quoteData.bestAsk,
+                    spread: quoteData.spread,
+                    bidDepth: quoteData.bid,
+                    askDepth: quoteData.ask,
+                    lastUpdated: new Date(quoteData.lastUpdated),
+                    isActive: true
+                }
+            },
+            { 
+                upsert: true, 
+                new: true,
+                setDefaultsOnInsert: true 
+            }
+        );
+        
+        return true;
+    } catch (error) {
+        console.error(`MongoDB save error for ${quoteData.symbol}:`, error.message);
+        return false;
+    }
+}
+
 // =====================================================
 // BATCH UPDATE - Split stocks into chunks for efficiency
 // =====================================================
+
+
+
+
 
 function chunkArray(array, size) {
     const chunks = [];
@@ -327,6 +485,7 @@ function startContinuousUpdates() {
     console.log('🚀 Running initial update...\n');
     updateLiveStockData();
     updateLiveIndexData();
+    updateLiveMarketDepth();
     
     // Update stocks every 2 seconds (more realistic for API rate limits)
     stockUpdateInterval = setInterval(async () => {
@@ -349,6 +508,15 @@ function startContinuousUpdates() {
             await updateLiveIndexData();
         }
     }, 5000); // 5 seconds
+
+     indexUpdateInterval = setInterval(async () => {
+        const status = getMarketStatus();
+        
+        if (status.isOpen) {
+            console.log(`\n⏰ [${status.time}] Index Update Triggered`);
+            await updateLiveMarketDepth();
+        }
+    }, 3000); // 3 seconds
     
     // Status check every 60 seconds
     statusCheckInterval = setInterval(() => {
@@ -414,11 +582,14 @@ module.exports = {
     // Main functions
     startContinuousUpdates,
     stopContinuousUpdates,
+
+
     
     // Update functions
     updateLiveStockData,
     updateLiveIndexData,
     updateStocksInBatches,
+     updateLiveMarketDepth,
     
     // Manual triggers
     manualStockUpdate,
@@ -431,5 +602,9 @@ module.exports = {
     
     // Direct Firebase access
     updateFirebase,
-    batchUpdateFirebase
+    batchUpdateFirebase,
+
+        // MongoDB access
+    saveToMongoDB,
+    batchSaveToMongoDB
 };
