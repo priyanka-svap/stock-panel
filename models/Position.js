@@ -1,4 +1,4 @@
-// models/Position.js
+// models/Position.js - UPDATED FOR MARGIN SYSTEM
 const mongoose = require('mongoose');
 
 const positionSchema = new mongoose.Schema({
@@ -12,20 +12,17 @@ const positionSchema = new mongoose.Schema({
     required: true,
     uppercase: true
   },
-  companyName: {
+  positionType: {
     type: String,
-    required: true
-  },
-  type: {
-    type: String,
-    enum: ['BUY', 'SELL'],
+    enum: ['LONG', 'SHORT'],
     required: true
   },
   quantity: {
     type: Number,
-    required: true
+    required: true,
+    min: 1
   },
-  avgPrice: {
+  entryPrice: {
     type: Number,
     required: true
   },
@@ -33,38 +30,160 @@ const positionSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
-  totalValue: {
-    type: String,
-    //required: true
+  
+  // MARGIN SYSTEM - NEW
+  marginUsed: {
+    type: Number,
+    required: true,
+    comment: 'Margin blocked for this position'
+  },
+  marginMultiplier: {
+    type: Number,
+    default: 1,
+    comment: 'Margin multiplier when position opened'
+  },
+  
+  // BROKERAGE SYSTEM - NEW
+  entryBrokerage: {
+    type: Number,
+    default: 0,
+    comment: 'Brokerage paid at entry'
+  },
+  exitBrokerage: {
+    type: Number,
+    default: 0,
+    comment: 'Brokerage paid at exit'
+  },
+  totalBrokerage: {
+    type: Number,
+    default: 0,
+    comment: 'Total brokerage for this position'
+  },
+  
+  // P&L CALCULATION
+  investmentValue: {
+    type: Number,
+    required: true,
+    comment: 'Entry price * quantity + entry brokerage'
+  },
+  currentValue: {
+    type: Number,
+    required: true,
+    comment: 'Current price * quantity'
   },
   pnl: {
     type: Number,
-    default: 0
+    default: 0,
+    comment: 'Current P&L (includes brokerage)'
   },
   pnlPercentage: {
     type: Number,
     default: 0
   },
-  dayChange: {
+  realizedPnL: {
     type: Number,
-    default: 0
+    default: 0,
+    comment: 'P&L after closing position'
   },
-  isOpen: {
+  
+  // DATES
+  entryDate: {
+    type: Date,
+    default: Date.now
+  },
+  exitDate: {
+    type: Date
+  },
+  
+  // EXPIRY (for F&O)
+  hasExpiry: {
     type: Boolean,
-    default: true
+    default: false
   },
-  exitPrice: {
+  expiryDate: {
+    type: Date
+  },
+  expiryMonth: {
+    type: String
+  },
+  expiryYear: {
     type: Number
   },
-  exitedAt: {
-    type: Date
+  
+  isActive: {
+    type: Boolean,
+    default: true
   }
 }, {
   timestamps: true
 });
 
-// Indexes
-positionSchema.index({ userId: 1, isOpen: 1 });
-positionSchema.index({ symbol: 1 });
+// Calculate P&L before saving
+positionSchema.pre('save', function(next) {
+  // Update current value
+  this.currentValue = this.currentPrice * this.quantity;
+  
+  // Calculate P&L based on position type
+  if (this.positionType === 'LONG') {
+    // LONG: Profit when price goes up
+    const grossPnL = this.currentValue - this.investmentValue;
+    this.pnl = grossPnL - this.totalBrokerage;
+  } else {
+    // SHORT: Profit when price goes down
+    const grossPnL = this.investmentValue - this.currentValue;
+    this.pnl = grossPnL - this.totalBrokerage;
+  }
+  
+  // Calculate percentage
+  if (this.investmentValue > 0) {
+    this.pnlPercentage = (this.pnl / this.investmentValue) * 100;
+  }
+  
+  next();
+});
+
+// Method to update current price and recalculate P&L
+positionSchema.methods.updatePrice = function(newPrice) {
+  this.currentPrice = newPrice;
+  this.currentValue = this.currentPrice * this.quantity;
+  
+  if (this.positionType === 'LONG') {
+    const grossPnL = this.currentValue - this.investmentValue;
+    this.pnl = grossPnL - this.totalBrokerage;
+  } else {
+    const grossPnL = this.investmentValue - this.currentValue;
+    this.pnl = grossPnL - this.totalBrokerage;
+  }
+  
+  if (this.investmentValue > 0) {
+    this.pnlPercentage = (this.pnl / this.investmentValue) * 100;
+  }
+};
+
+// Method to close position
+positionSchema.methods.close = function(exitPrice, exitBrokerage) {
+  this.currentPrice = exitPrice;
+  this.exitBrokerage = exitBrokerage;
+  this.totalBrokerage = this.entryBrokerage + this.exitBrokerage;
+  this.exitDate = new Date();
+  this.isActive = false;
+  
+  // Calculate final realized P&L
+  this.currentValue = exitPrice * this.quantity;
+  
+  if (this.positionType === 'LONG') {
+    const grossPnL = this.currentValue - this.investmentValue;
+    this.realizedPnL = grossPnL - this.totalBrokerage;
+  } else {
+    const grossPnL = this.investmentValue - this.currentValue;
+    this.realizedPnL = grossPnL - this.totalBrokerage;
+  }
+  
+  this.pnl = this.realizedPnL;
+  
+  if (this.investmentValue > 0) {
+    this.pnlPercentage = (this.realizedPnL / this.investmentValue) * 100;
+  }
+};
 
 module.exports = mongoose.model('Position', positionSchema);

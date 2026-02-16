@@ -29,11 +29,12 @@ app.use('/api/positions', require('./routes/positions'));
 app.use('/api/watchlist', require('./routes/watchlist'));
 app.use('/api/funds', require('./routes/funds'));
 app.use('/api/market', require('./routes/marketDepthRoutes'));
+app.use('/api/contracts', require('./routes/contracts'));
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
+  res.json({
+    status: 'OK',
     timestamp: new Date(),
     firebase: {
       initialized: global.firebaseService?.initialized || false,
@@ -47,28 +48,36 @@ app.get('/health', (req, res) => {
 // ============================================
 
 
-  // Add this to your server.js - AFTER mongoose.connect
+// Add this to your server.js - AFTER mongoose.connect
 
 // =====================================================
 // FIREBASE REAL-TIME UPDATES (No Admin SDK!)
 // =====================================================
 
+const { startUserDataSync } = require('./jobs/userDataSyncJob');
+
+const { startSLTPMonitoring } = require('./jobs/sltpMonitorJob');
 
 
 
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/stockPanelDB')
   .then(async () => {
     console.log('✅ Connected to MongoDB');
-    
+
     // Start Firebase updates
     startContinuousUpdates();
-    
+    startUserDataSync(5);
+    // Fast (every 1 second):
+    startSLTPMonitoring(1000);
+
+   
+
     console.log('━'.repeat(60));
     console.log('🔥 Firebase Real-time Updates ACTIVE');
     console.log('⚡ Updates: Every 1-2 seconds');
     console.log('📡 Method: REST API (No credentials!)');
     console.log('━'.repeat(60));
-    
+
   })
   .catch(err => {
     console.error('❌ MongoDB connection error:', err);
@@ -90,12 +99,12 @@ server.listen(PORT, () => {
 
 // Graceful shutdown
 process.on('SIGINT', () => {
-    console.log('\n⚠️  Shutting down gracefully...');
-    stopContinuousUpdates();
-    mongoose.connection.close(() => {
-        console.log('✅ MongoDB connection closed');
-        process.exit(0);
-    });
+  console.log('\n⚠️  Shutting down gracefully...');
+  stopContinuousUpdates();
+  mongoose.connection.close(() => {
+    console.log('✅ MongoDB connection closed');
+    process.exit(0);
+  });
 });
 
 

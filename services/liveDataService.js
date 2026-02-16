@@ -236,6 +236,7 @@ async function fetchLiveIndexPrice(indexName) {
 
 // In services/liveDataService.js
 const { updateFirebase } = require('./firebaseService');
+const { sanitizeFilter } = require('mongoose');
 
 async function updateStockPrice(symbol) {
   const liveData = await fetchLiveStockPrice(symbol);
@@ -278,13 +279,25 @@ async function updateIndexPrice(indexName) {
     return { success: false, message: error.message };
   }
 }
+function isValidNumber(value) {
+  return value !== null && 
+         value !== undefined && 
+         !isNaN(value) && 
+         isFinite(value) && 
+         typeof value === 'number';
+}
 
+function sanitizeNumber(value, defaultValue = 0) {
+  const num = Number(value);
+  return isValidNumber(num) ? num : defaultValue;
+}
 // ============================================
 // UPDATE MULTIPLE STOCKS
 // ============================================
 async function updateMultipleStocks(symbols) {
   const results = [];
   for (const symbol of symbols) {
+  
     const result = await updateStockPrice(symbol);
     results.push(result);
     // Small delay to avoid rate limiting

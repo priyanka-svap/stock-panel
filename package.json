@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "seed": "node seed.js",
     "seed-admin": "node seedAdmin.js",
-    "create-test-data": "node createTestData.js"
+    "create-test-data": "node createTestData.js",
+     "seed-contract": "node seedContracts.js"
   },
   "keywords": [
     "stock",

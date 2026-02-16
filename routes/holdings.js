@@ -5,9 +5,10 @@ const Holding = require('../models/Holding');
 const Stock = require('../models/Stock');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
+const { autoSyncMiddleware } = require('../middleware/firebaseSyncHooks');
 
 // Get all holdings
-router.get('/', auth, async (req, res) => {
+router.get('/', auth,  autoSyncMiddleware('holding'), async (req, res) => {
   try {
     let holdings = await Holding.find({ userId: req.user.userId }).sort({ createdAt: -1 });
     
@@ -48,7 +49,7 @@ router.get('/', auth, async (req, res) => {
 });
 
 // Buy stock (add to holdings)
-router.post('/buy', auth, async (req, res) => {
+router.post('/buy', auth, autoSyncMiddleware('holding'),  async (req, res) => {
   try {
     const { symbol, companyName, quantity, price } = req.body;
     
@@ -104,7 +105,7 @@ router.post('/buy', auth, async (req, res) => {
 });
 
 // Sell stock
-router.post('/sell/:symbol', auth, async (req, res) => {
+router.post('/sell/:symbol', auth,  autoSyncMiddleware('holding'), async (req, res) => {
   try {
     const { quantity } = req.body;
     
@@ -162,7 +163,7 @@ router.post('/sell/:symbol', auth, async (req, res) => {
 });
 
 // Delete holding
-router.delete('/:symbol', auth, async (req, res) => {
+router.delete('/:symbol', auth, autoSyncMiddleware('holding'),  async (req, res) => {
   try {
     const holding = await Holding.findOneAndDelete({
       userId: req.user.userId,

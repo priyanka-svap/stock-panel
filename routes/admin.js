@@ -278,7 +278,149 @@ router.get('/users/:userId', adminAuth, checkPermission('canManageUsers'), async
   }
 });
 
-// Update User
+// =====================================================
+// CREATE NEW USER (with margin settings)
+// =====================================================
+
+router.post('/users/create', adminAuth, async (req, res) => {
+    try {
+        const {
+            username,
+            password,
+            email,
+            fullName,
+            availableBalance,
+            marginAllowed,
+            marginMultiplier,
+            marginEnabled,
+            maxLossPerDay
+        } = req.body;
+        
+        // Validate required fields
+        if (!username || !password || !email || !fullName) {
+            return res.status(400).json({
+                success: false,
+                message: 'Username, password, email, and fullName are required'
+            });
+        }
+        
+        // Check if username exists
+        const existingUser = await User.findOne({ username });
+        if (existingUser) {
+            return res.status(400).json({
+                success: false,
+                message: 'Username already exists'
+            });
+        }
+        
+        // Check if email exists
+        const existingEmail = await User.findOne({ email });
+        if (existingEmail) {
+            return res.status(400).json({
+                success: false,
+                message: 'Email already exists'
+            });
+        }
+        
+        // Create user
+        const user = new User({
+            username,
+            password,
+            email,
+            fullName,
+            availableBalance: availableBalance || 0,
+            marginAllowed: marginAllowed || 0,
+            marginMultiplier: marginMultiplier || 1,
+            marginEnabled: marginEnabled !== undefined ? marginEnabled : true,
+            maxLossPerDay: maxLossPerDay || 0,
+            usedMargin: 0,
+            totalPnL: 0,
+            portfolioValue: 0,
+            isActive: true
+        });
+        
+        await user.save();
+        
+        // Return user without password
+        const userObj = user.toObject();
+        delete userObj.password;
+        
+        res.json({
+            success: true,
+            message: 'User created successfully',
+            data: {
+                ...userObj,
+                totalMargin: user.totalMargin,
+                availableMargin: user.availableMargin
+            }
+        });
+        
+    } catch (error) {
+        console.error('Create user error:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: error.message 
+        });
+    }
+});
+
+// =====================================================
+// UPDATE USER (including margin settings)
+// =====================================================
+
+router.patch('/users/:id', adminAuth, async (req, res) => {
+    try {
+        const {
+            fullName,
+            email,
+            availableBalance,
+            marginAllowed,
+            marginMultiplier,
+            marginEnabled,
+            maxLossPerDay,
+            isActive
+        } = req.body;
+        
+        const user = await User.findById(req.params.id);
+        
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+        
+        // Update fields if provided
+        if (fullName !== undefined) user.fullName = fullName;
+        if (email !== undefined) user.email = email;
+        if (availableBalance !== undefined) user.availableBalance = availableBalance;
+        if (marginAllowed !== undefined) user.marginAllowed = marginAllowed;
+        if (marginMultiplier !== undefined) user.marginMultiplier = marginMultiplier;
+        if (marginEnabled !== undefined) user.marginEnabled = marginEnabled;
+        if (maxLossPerDay !== undefined) user.maxLossPerDay = maxLossPerDay;
+        if (isActive !== undefined) user.isActive = isActive;
+        
+        await user.save();
+        
+        res.json({
+            success: true,
+            message: 'User updated successfully',
+            data: {
+                ...user.toObject(),
+                totalMargin: user.totalMargin,
+                availableMargin: user.availableMargin,
+                marginUtilization: user.marginUtilization
+            }
+        });
+        
+    } catch (error) {
+        console.error('Update user error:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: error.message 
+        });
+    }
+});
 router.put('/users/:userId', adminAuth, checkPermission('canManageUsers'), async (req, res) => {
   try {
     const { fullName, email, availableBalance, isActive, method, notes } = req.body;
@@ -333,6 +475,65 @@ router.put('/users/:userId', adminAuth, checkPermission('canManageUsers'), async
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+// =====================================================
+// UPDATE MARGIN ONLY (Quick margin adjustment)
+// =====================================================
+
+router.patch('/users/:id/margin', adminAuth, async (req, res) => {
+    try {
+        const { marginAllowed, marginMultiplier, marginEnabled } = req.body;
+        
+        const user = await User.findById(req.params.id);
+        
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+        
+        // Update margin settings
+        if (marginAllowed !== undefined) {
+            user.marginAllowed = Math.max(0, marginAllowed);
+        }
+        
+        if (marginMultiplier !== undefined) {
+            user.marginMultiplier = Math.min(Math.max(1, marginMultiplier), 10); // 1x to 10x
+        }
+        
+        if (marginEnabled !== undefined) {
+            user.marginEnabled = marginEnabled;
+        }
+        
+        await user.save();
+        
+        res.json({
+            success: true,
+            message: 'Margin updated successfully',
+            data: {
+                userId: user._id,
+                username: user.username,
+                availableBalance: user.availableBalance,
+                marginAllowed: user.marginAllowed,
+                marginMultiplier: user.marginMultiplier,
+                marginEnabled: user.marginEnabled,
+                totalMargin: user.totalMargin,
+                availableMargin: user.availableMargin,
+                usedMargin: user.usedMargin,
+                marginUtilization: user.marginUtilization
+            }
+        });
+        
+    } catch (error) {
+        console.error('Update margin error:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: error.message 
+        });
+    }
+});
+
 
 // Delete User
 router.delete('/users/:userId', adminAuth, requireSuperAdmin, async (req, res) => {
