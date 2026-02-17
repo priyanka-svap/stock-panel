@@ -6,7 +6,7 @@ const auth = require('../middleware/auth');
 
 
 
-router.get('/', auth,async (req, res) => {
+router.get('/', auth, autoSyncMiddleware('position'),async (req, res) => {
   try {
     const positions = await Position.find({
       userId: req.user.userId,
@@ -30,7 +30,7 @@ router.get('/', auth,async (req, res) => {
 // OPEN NEW POSITION
 // =====================================================
 
-router.post('/open', auth, async (req, res) => {
+router.post('/open', auth, autoSyncMiddleware('position'), async (req, res) => {
     try {
         const { symbol, positionType, quantity, entryPrice } = req.body;
         
@@ -113,7 +113,7 @@ router.post('/open', auth, async (req, res) => {
 // CLOSE POSITION
 // =====================================================
 
-router.post('/close/:id', auth, async (req, res) => {
+router.post('/close/:id', auth, autoSyncMiddleware('position'), async (req, res) => {
     try {
         const { exitPrice } = req.body;
         
@@ -126,7 +126,7 @@ router.post('/close/:id', auth, async (req, res) => {
         
         // Find position
         const position = await Position.findOne({
-            _id: ObjectId(req.params.id),
+            _id: req.params.id,
             userId: req.user.userId,
             isActive: true
         });
@@ -183,7 +183,7 @@ router.post('/close/:id', auth, async (req, res) => {
 // UPDATE STOP LOSS / TARGET
 // =====================================================
 
-router.patch('/:id/targets', auth, async (req, res) => {
+router.patch('/:id/targets', auth, autoSyncMiddleware('position'), async (req, res) => {
     try {
         const { stopLoss, target } = req.body;
         
@@ -229,7 +229,7 @@ router.patch('/:id/targets', auth, async (req, res) => {
 // DELETE CLOSED POSITION
 // =====================================================
 
-router.delete('/:id', auth, async (req, res) => {
+router.delete('/:id', auth, autoSyncMiddleware('position'), async (req, res) => {
     try {
         const position = await Position.findOne({
             _id: req.params.id,

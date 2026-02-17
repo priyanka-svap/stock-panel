@@ -255,6 +255,7 @@ router.patch('/:orderId/cancel', auth, async (req, res) => {
 // ─────────────────────────────────────────
 router.post('/close-position/:positionId', auth, async (req, res) => {
   try {
+   
     const position = await Position.findOne({
       _id: req.params.positionId,
       userId: req.user.userId,
