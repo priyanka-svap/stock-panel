@@ -1,367 +1,209 @@
-// services/userFirebaseService.js - User Data Real-time Firebase Sync
+// services/userFirebaseService.js
+// Firebase structure (LEAN - only what app needs):
+//
+// users/{userId}/
+//   profile    → name, email, clientId
+//   balance    → availableBalance, usedMargin, availableMargin, totalMargin, brokeragePercentage
+//   pnl        → totalPnL, todayPnL, unrealizedPnL, totalInvestment
+//   positions  → { posId: { symbol, qty, entryPrice, markPrice, pnl, pnl%, margin, marginRatio, liqPrice, sl, tp, positionType } }
+//   watchlist  → { symbol: { symbol, addedAt } }
+//
+// ❌ NO orders, holdings synced to Firebase (only in MongoDB)
+
 const fetch = require('node-fetch');
+const User     = require('../models/User');
+const Position = require('../models/Position');
+const Stock    = require('../models/Stock');
+const Watchlist = require('../models/Watchlist');
 
 const FIREBASE_URL = 'https://stockpanelapp-default-rtdb.asia-southeast1.firebasedatabase.app';
 
-class UserFirebaseService {
-    constructor() {
-        this.lastUpdate = {};
-    }
-
-    // =====================================================
-    // SYNC USER WATCHLIST TO FIREBASE
-    // =====================================================
-
-    async syncUserWatchlist(userId, watchlistItems) {
-        try {
-            const path = `users/${userId}/watchlist`;
-
-            // Format watchlist data
-            const watchlistData = {};
-
-            watchlistItems.forEach((item, index1) => {
-                item.stocks.forEach((items, index) => {
-                    watchlistData[items.symbol] = {
-                        symbol: items.symbol,
-                        addedAt: items.addedAt || Date.now(),
-                        position: index,
-                        lastUpdated: Date.now()
-                    };
-                })
-            });
-
-            const success = await this.updateFirebase(path, watchlistData);
-
-            if (success) {
-                console.log(`✅ Synced watchlist for user ${userId} (${watchlistItems.length} items)`);
-            }
-
-            return success;
-
-        } catch (error) {
-            console.error(`Firebase watchlist sync error for ${userId}:`, error.message);
-            return false;
-        }
-    }
-
-    // =====================================================
-    // SYNC USER ORDERS TO FIREBASE
-    // =====================================================
-
-    async syncUserOrders(userId, orders) {
-        try {
-            const path = `users/${userId}/orders`;
-
-            // Format orders data
-            const ordersData = {};
-            orders.forEach(order => {
-                ordersData[order._id] = {
-                    orderId: order._id.toString(),
-                    symbol: order.symbol,
-                    orderType: order.orderType, // BUY or SELL
-                    quantity: order.quantity,
-                    price: order.price,
-                    status: order.status, // PENDING, EXECUTED, CANCELLED
-                    orderDate: order.orderDate || order.createdAt,
-                    executedPrice: order.executedPrice || null,
-                    executedAt: order.executedAt || null,
-                    lastUpdated: Date.now()
-                };
-            });
-     
-            const success = await this.updateFirebase(path, ordersData);
-
-            if (success) {
-                console.log(`✅ Synced orders for user ${userId} (${orders.length} orders)`);
-            }
-
-            return success;
-
-        } catch (error) {
-            console.error(`Firebase orders sync error for ${userId}:`, error.message);
-            return false;
-        }
-    }
-
-    // =====================================================
-    // SYNC USER HOLDINGS TO FIREBASE
-    // =====================================================
-
-    async syncUserHoldings(userId, holdings) {
-        try {
-            const path = `users/${userId}/holdings`;
-
-            // Format holdings data
-            const holdingsData = {};
-            holdings.forEach(holding => {
-                const currentPrice = holding.currentPrice || 0;
-                const avgPrice = holding.averagePrice || 0;
-                const quantity = holding.quantity || 0;
-
-                // Calculate P&L
-                const investedValue = avgPrice * quantity;
-                const currentValue = currentPrice * quantity;
-                const pnl = currentValue - investedValue;
-                const pnlPercentage = investedValue > 0 ? ((pnl / investedValue) * 100) : 0;
-
-                holdingsData[holding.symbol] = {
-                    symbol: holding.symbol,
-                    quantity: quantity,
-                    averagePrice: avgPrice,
-                    currentPrice: currentPrice,
-                    investedValue: investedValue,
-                    currentValue: currentValue,
-                    pnl: pnl,
-                    pnlPercentage: pnlPercentage,
-                    lastBuyDate: holding.purchaseDate || holding.createdAt,
-                    lastUpdated: Date.now()
-                };
-            });
-
-            const success = await this.updateFirebase(path, holdingsData);
-
-            if (success) {
-                console.log(`✅ Synced holdings for user ${userId} (${holdings.length} holdings)`);
-            }
-
-            return success;
-
-        } catch (error) {
-            console.error(`Firebase holdings sync error for ${userId}:`, error.message);
-            return false;
-        }
-    }
-
-    // =====================================================
-    // SYNC USER POSITIONS TO FIREBASE
-    // =====================================================
-
-    async syncUserPositions(userId, positions) {
-        try {
-            const path = `users/${userId}/positions`;
-
-            // Format positions data
-            const positionsData = {};
-            positions.forEach(position => {
-                const entryPrice = position.entryPrice || 0;
-                const currentPrice = position.currentPrice || 0;
-                const quantity = position.quantity || 0;
-
-                // Calculate P&L
-                const pnl = (currentPrice - entryPrice) * quantity;
-                const pnlPercentage = entryPrice > 0 ? (((currentPrice - entryPrice) / entryPrice) * 100) : 0;
-
-                positionsData[position._id] = {
-                    positionId: position._id.toString(),
-                    symbol: position.symbol,
-                    positionType: position.positionType, // LONG or SHORT
-                    quantity: quantity,
-                    entryPrice: entryPrice,
-                    currentPrice: currentPrice,
-                    pnl: pnl,
-                    pnlPercentage: pnlPercentage,
-                    entryDate: position.entryDate || position.createdAt,
-                    isActive: position.isActive !== false,
-                    lastUpdated: Date.now()
-                };
-            });
-
-            const success = await this.updateFirebase(path, positionsData);
-
-            if (success) {
-                console.log(`✅ Synced positions for user ${userId} (${positions.length} positions)`);
-            }
-
-            return success;
-
-        } catch (error) {
-            console.error(`Firebase positions sync error for ${userId}:`, error.message);
-            return false;
-        }
-    }
-
-    // =====================================================
-    // SYNC USER PROFILE TO FIREBASE
-    // =====================================================
-
-    async syncUserProfile(userId, userProfile) {
-        try {
-            const path = `users/${userId}/profile`;
-
-            const profileData = {
-                userId: userId,
-                username: userProfile.username,
-                fullName: userProfile.fullName,
-                email: userProfile.email,
-                clientId: userProfile.clientId,
-                availableBalance: userProfile.availableBalance || 0,
-                usedMargin: userProfile.usedMargin || 0,
-                totalPnL: userProfile.totalPnL || 0,
-                portfolioValue: userProfile.portfolioValue || 0,
-                isActive: userProfile.isActive !== false,
-                lastUpdated: Date.now()
-            };
-
-            const success = await this.updateFirebase(path, profileData);
-
-            if (success) {
-                console.log(`✅ Synced profile for user ${userId}`);
-            }
-
-            return success;
-
-        } catch (error) {
-            console.error(`Firebase profile sync error for ${userId}:`, error.message);
-            return false;
-        }
-    }
-
-    // =====================================================
-    // SYNC ALL USER DATA (Complete Sync)
-    // =====================================================
-
-    async syncAllUserData(userId, data) {
-        try {
-            const results = {
-                profile: false,
-                watchlist: false,
-                orders: false,
-                holdings: false,
-                positions: false
-            };
-
-            // Sync profile
-            if (data.profile) {
-                results.profile = await this.syncUserProfile(userId, data.profile);
-            }
-
-            // Sync watchlist
-            if (data.watchlist && data.watchlist.length > 0) {
-                results.watchlist = await this.syncUserWatchlist(userId, data.watchlist);
-            }
-
-            // Sync orders
-            if (data.orders && data.orders.length > 0) {
-                results.orders = await this.syncUserOrders(userId, data.orders);
-            }
-
-            // Sync holdings
-            if (data.holdings && data.holdings.length > 0) {
-                results.holdings = await this.syncUserHoldings(userId, data.holdings);
-            }
-
-            // Sync positions
-            if (data.positions && data.positions.length > 0) {
-                results.positions = await this.syncUserPositions(userId, data.positions);
-            }
-
-            return results;
-
-        } catch (error) {
-            console.error(`Firebase full sync error for ${userId}:`, error.message);
-            return null;
-        }
-    }
-
-    // =====================================================
-    // DELETE USER DATA FROM FIREBASE
-    // =====================================================
-
-    async deleteUserData(userId) {
-        try {
-            const path = `users/${userId}`;
-            const url = `${FIREBASE_URL}/${path}.json`;
-
-            const response = await fetch(url, {
-                method: 'DELETE'
-            });
-
-            if (response.ok) {
-                console.log(`✅ Deleted Firebase data for user ${userId}`);
-                return true;
-            }
-
-            return false;
-
-        } catch (error) {
-            console.error(`Firebase delete error for ${userId}:`, error.message);
-            return false;
-        }
-    }
-
-    // =====================================================
-    // FIREBASE UPDATE FUNCTION (REST API)
-    // =====================================================
-
-    async updateFirebase(path, data) {
-        try {
-            const url = `${FIREBASE_URL}/${path}.json`;
-
-            const response = await fetch(url, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-
-            return response.ok;
-
-        } catch (error) {
-            console.error(`Firebase update error (${path}):`, error.message);
-            return false;
-        }
-    }
-
-    // =====================================================
-    // BATCH UPDATE (Multiple paths at once)
-    // =====================================================
-
-    async batchUpdateFirebase(updates) {
-        try {
-            const url = `${FIREBASE_URL}/.json`;
-
-            const response = await fetch(url, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(updates)
-            });
-
-            return response.ok;
-
-        } catch (error) {
-            console.error('Firebase batch update error:', error.message);
-            return false;
-        }
-    }
+// ─────────────────────────────────────────────
+// Firebase REST helpers
+// ─────────────────────────────────────────────
+async function _fbPut(path, data) {
+  try {
+    const r = await fetch(`${FIREBASE_URL}/${path}.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    return r.ok;
+  } catch (e) {
+    console.error(`Firebase PUT error (${path}):`, e.message);
+    return false;
+  }
 }
 
-module.exports = UserFirebaseService;
+async function _fbPatch(updates) {
+  try {
+    const r = await fetch(`${FIREBASE_URL}/.json`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    });
+    return r.ok;
+  } catch (e) {
+    console.error('Firebase PATCH error:', e.message);
+    return false;
+  }
+}
 
-// =====================================================
-// USAGE EXAMPLE
-// =====================================================
+// ─────────────────────────────────────────────
+// Main: sync single user to Firebase
+// ─────────────────────────────────────────────
+async function syncSingleUserToFirebase(userId) {
+  try {
+    const user = await User.findById(userId).lean();
+    if (!user) return false;
 
-/*
-const UserFirebaseService = require('./services/userFirebaseService');
-const userFirebase = new UserFirebaseService();
+    // ── Positions with live prices ──
+    const positions = await Position.find({ userId, isActive: true }).lean();
 
-// Sync watchlist
-await userFirebase.syncUserWatchlist(userId, watchlistItems);
+    // Get live prices for all position symbols
+    const symbols = [...new Set(positions.map(p => p.symbol))];
+    const stocks  = await Stock.find({ symbol: { $in: symbols } }).lean();
+    const priceMap = {};
+    stocks.forEach(s => { priceMap[s.symbol] = parseFloat(s.currentPrice) || 0; });
 
-// Sync orders
-await userFirebase.syncUserOrders(userId, orders);
+    let totalUnrealizedPnL  = 0;
+    let totalInvestment     = 0;
+    const positionsData = {};
 
-// Sync holdings
-await userFirebase.syncUserHoldings(userId, holdings);
+    positions.forEach(pos => {
+      const markPrice    = priceMap[pos.symbol] || pos.currentPrice;
+      const investedVal  = pos.investmentValue || (pos.entryPrice * pos.quantity);
+      const currentVal   = markPrice * pos.quantity;
 
-// Sync positions
-await userFirebase.syncUserPositions(userId, positions);
+      let pnl, pnlPct;
+      if (pos.positionType === 'LONG') {
+        pnl    = currentVal - investedVal - (pos.totalBrokerage || 0);
+        pnlPct = investedVal > 0 ? (pnl / investedVal) * 100 : 0;
+      } else {
+        pnl    = investedVal - currentVal - (pos.totalBrokerage || 0);
+        pnlPct = investedVal > 0 ? (pnl / investedVal) * 100 : 0;
+      }
 
-// Sync all at once
-await userFirebase.syncAllUserData(userId, {
-    profile: userProfile,
-    watchlist: watchlistItems,
-    orders: orders,
-    holdings: holdings,
-    positions: positions
-});
-*/
+      totalUnrealizedPnL += pnl;
+      totalInvestment    += investedVal;
+
+      // Margin ratio = marginUsed / investedVal * 100
+      const marginRatio  = investedVal > 0 ? (pos.marginUsed / investedVal * 100) : 0;
+
+      // Liquidation price estimate (simplified)
+      let liqPrice = null;
+      if (pos.marginMultiplier > 1 && pos.positionType === 'LONG') {
+        liqPrice = parseFloat((pos.entryPrice * (1 - 1 / pos.marginMultiplier * 0.8)).toFixed(2));
+      }
+
+      positionsData[pos._id.toString()] = {
+        positionId:   pos._id.toString(),
+        symbol:       pos.symbol,
+        companyName:  pos.companyName || pos.symbol,
+        positionType: pos.positionType,      // LONG / SHORT
+        quantity:     pos.quantity,
+        entryPrice:   pos.entryPrice,
+        markPrice:    markPrice,             // live mark price
+        investedValue: investedVal,
+        currentValue:  currentVal,
+        pnl:           parseFloat(pnl.toFixed(2)),
+        pnlPercentage: parseFloat(pnlPct.toFixed(2)),
+        marginUsed:    pos.marginUsed,
+        marginRatio:   parseFloat(marginRatio.toFixed(2)),
+        marginMultiplier: pos.marginMultiplier || 1,
+        liquidationPrice: liqPrice,
+        entryBrokerage: pos.entryBrokerage || 0,
+        totalBrokerage: pos.totalBrokerage  || 0,
+        stopLoss:      pos.stopLoss  || null,
+        takeProfit:    pos.takeProfit || null,
+        instrumentType: pos.instrumentType || 'EQUITY',
+        contractType:  pos.contractType || 'SPOT',
+        expiryDate:    pos.expiryDate || null,
+        expiryMonth:   pos.expiryMonth || null,
+        isActive:      pos.isActive,
+        entryDate:     pos.entryDate || pos.createdAt,
+        lastUpdated:   Date.now()
+      };
+    });
+
+    // ── Watchlist ──
+    const wlItems   = await Watchlist.find({ userId }).lean();
+    const watchlistData = {};
+    wlItems.forEach(item => {
+      if (item.stocks && Array.isArray(item.stocks)) {
+        item.stocks.forEach(s => {
+          watchlistData[s.symbol] = {
+            symbol:  s.symbol,
+            addedAt: s.addedAt || item.createdAt,
+            lastUpdated: Date.now()
+          };
+        });
+      } else if (item.symbol) {
+        watchlistData[item.symbol] = {
+          symbol:  item.symbol,
+          addedAt: item.createdAt,
+          lastUpdated: Date.now()
+        };
+      }
+    });
+
+    // ── Build Firebase PATCH ──
+    const uid = userId.toString();
+    const updates = {
+      [`users/${uid}/profile`]: {
+        userId:   uid,
+        username: user.username,
+        fullName: user.fullName,
+        email:    user.email,
+        clientId: user.clientId,
+        isActive: user.isActive,
+        lastUpdated: Date.now()
+      },
+      [`users/${uid}/balance`]: {
+        availableBalance:    parseFloat((user.availableBalance || 0).toFixed(2)),
+        usedMargin:          parseFloat((user.usedMargin || 0).toFixed(2)),
+        availableMargin:     parseFloat(((user.availableBalance * (user.marginMultiplier || 1)) - (user.usedMargin || 0)).toFixed(2)),
+        totalMargin:         parseFloat(((user.availableBalance || 0) * (user.marginMultiplier || 1)).toFixed(2)),
+        marginMultiplier:    user.marginMultiplier || 1,
+        brokeragePercentage: user.brokeragePercentage || 0.05,
+        totalBrokeragePaid:  parseFloat((user.totalBrokeragePaid || 0).toFixed(2)),
+        lastUpdated: Date.now()
+      },
+      [`users/${uid}/pnl`]: {
+        totalPnL:        parseFloat((user.totalPnL || 0).toFixed(2)),
+        todayPnL:        parseFloat((user.todayPnL || 0).toFixed(2)),
+        unrealizedPnL:   parseFloat(totalUnrealizedPnL.toFixed(2)),
+        totalInvestment: parseFloat(totalInvestment.toFixed(2)),
+        openPositions:   positions.length,
+        lastUpdated: Date.now()
+      },
+      [`users/${uid}/positions`]: positionsData,
+      [`users/${uid}/watchlist`]: watchlistData
+    };
+
+    const ok = await _fbPatch(updates);
+    if (ok) console.log(`✅ Firebase synced: ${user.username} | pos:${positions.length} | wl:${Object.keys(watchlistData).length}`);
+    return ok;
+
+  } catch (e) {
+    console.error(`❌ Firebase sync error for ${userId}:`, e.message);
+    return false;
+  }
+}
+
+// ─────────────────────────────────────────────
+// Sync ALL active users (called by periodic job)
+// ─────────────────────────────────────────────
+async function syncAllUsersToFirebase() {
+  try {
+    const users = await User.find({ isActive: true }, '_id').lean();
+    for (const u of users) {
+      await syncSingleUserToFirebase(u._id.toString());
+    }
+    console.log(`🔄 Firebase full sync done: ${users.length} users`);
+  } catch (e) {
+    console.error('❌ Full sync error:', e.message);
+  }
+}
+
+module.exports = { syncSingleUserToFirebase, syncAllUsersToFirebase, _fbPatch, _fbPut };

@@ -1,195 +1,346 @@
-// routes/orders.js - CORRECTED VERSION with productType
+// routes/orders.js
+// ✅ MARKET order   → COMPLETED instantly → Position created
+// ✅ LIMIT order    → PENDING → pendingOrderMonitor executes when price hits
+// ✅ SL / SL-M      → PENDING → pendingOrderMonitor executes when trigger hits
+// ✅ Margin blocked on order placement for all types
+// ✅ Brokerage + GST + Stamp + TxnCharges calculated
+// ✅ SL/TP attached to Position for realtime monitoring
+// ✅ Firebase synced after every action
 
 const express = require('express');
 const router = express.Router();
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Stock = require('../models/Stock');
-const Holding = require('../models/Holding');
 const Position = require('../models/Position');
 const auth = require('../middleware/auth');
-const { autoSyncMiddleware } = require('../middleware/firebaseSyncHooks');
+const { syncSingleUserToFirebase } = require('../services/userFirebaseService');
 
-// Get all orders for a user
-router.get('/', auth,autoSyncMiddleware('order'),  async (req, res) => {
+// ─────────────────────────────────────────
+// GET /api/orders  – user's order list
+// ─────────────────────────────────────────
+router.get('/', auth, async (req, res) => {
   try {
-    const { status, page = 1, limit = 20 } = req.query;
-    
+    const { status, page = 1, limit = 50 } = req.query;
     const query = { userId: req.user.userId };
-    if (status) {
-      query.status = status.toUpperCase();
-    }
-    
-    const orders = await Order.find(query)
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
-      .skip((parseInt(page) - 1) * parseInt(limit));
-    
-    const count = await Order.countDocuments(query);
-    
+    if (status) query.status = status.toUpperCase();
+
+    const [orders, total] = await Promise.all([
+      Order.find(query).sort({ createdAt: -1 })
+        .limit(+limit).skip((+page - 1) * +limit),
+      Order.countDocuments(query)
+    ]);
+
     res.json({
-      success: true,
-      data: orders,
-      pagination: {
-        total: count,
-        page: parseInt(page),
-        limit: parseInt(limit)
-      }
+      success: true, data: orders,
+      pagination: { total, page: +page, limit: +limit }
     });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching orders',
-      error: error.message
-    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
   }
 });
 
-// Place new order
-router.post('/place', auth,autoSyncMiddleware('order'),  async (req, res) => {
- try {
+// ─────────────────────────────────────────
+// POST /api/orders/place
+// ─────────────────────────────────────────
+router.post('/place', auth, async (req, res) => {
+  try {
     const {
-      symbol, companyName, tradingSymbol, instrumentType = 'EQUITY',
-      contractType = 'SPOT', expiryDate, expiryMonth, strikePrice,
-      lotSize = 1, orderType, orderMode = 'Market', quantity, price,
+      symbol, companyName, tradingSymbol,
+      instrumentType = 'EQUITY', contractType = 'SPOT',
+      expiryDate, expiryMonth, strikePrice, lotSize,
+      orderType, orderMode = 'MARKET',
+      quantity, price, limitPrice,
       stopLoss, takeProfit, notes
     } = req.body;
-    
-    if (!symbol || !orderType || !quantity || !price) {
-      return res.status(400).json({ success: false, message: 'Missing required fields' });
+
+    /* ── 1. Basic validation ── */
+    if (!symbol || !orderType || !quantity || !price)
+      return res.status(400).json({ success: false, message: 'symbol, orderType, quantity, price are required' });
+
+    const MODE = (orderMode || 'MARKET').toUpperCase();
+    const TYPE = orderType.toUpperCase();
+
+    // LIMIT / SL / SL-M needs a trigger/limit price
+    if (['LIMIT', 'SL', 'SL-M'].includes(MODE) && !limitPrice)
+      return res.status(400).json({
+        success: false,
+        message: `limitPrice is required for ${MODE} order`
+      });
+
+    /* ── 2. SL / TP price validation ── */
+    if (stopLoss != null) {
+      if (TYPE === 'BUY' && +stopLoss >= +price)
+        return res.status(400).json({ success: false, message: 'Stop-Loss (BUY) must be BELOW entry price' });
+      if (TYPE === 'SELL' && +stopLoss <= +price)
+        return res.status(400).json({ success: false, message: 'Stop-Loss (SELL) must be ABOVE entry price' });
     }
-    
-    const user = await User.findById(req.user.userId);
-    if (!user || !user.isActive) {
+    if (takeProfit != null) {
+      if (TYPE === 'BUY' && +takeProfit <= +price)
+        return res.status(400).json({ success: false, message: 'Take-Profit (BUY) must be ABOVE entry price' });
+      if (TYPE === 'SELL' && +takeProfit >= +price)
+        return res.status(400).json({ success: false, message: 'Take-Profit (SELL) must be BELOW entry price' });
+    }
+
+    /* ── 3. Load user & stock ── */
+    const [user, stockData] = await Promise.all([
+      User.findById(req.user.userId),
+      Stock.findOne({ symbol: symbol.toUpperCase() })
+    ]);
+
+    if (!user || !user.isActive)
       return res.status(404).json({ success: false, message: 'User not found or inactive' });
-    }
-    
-    const stockData = 
-      await Stock.findOne({ symbol: symbol.toUpperCase() });
-    
-    if (!stockData) {
-      return res.status(404).json({ success: false, message: 'Stock/Contract not found' });
-    }
-    
-    if (stockData.expiryDate && new Date(stockData.expiryDate) < new Date()) {
-      return res.status(400).json({ success: false, message: 'Contract expired' });
-    }
-    
-    const totalAmount = quantity * price;
-    
+    if (!stockData)
+      return res.status(404).json({ success: false, message: `Stock '${symbol}' not found` });
+    if (stockData.expiryDate && new Date(stockData.expiryDate) < new Date())
+      return res.status(400).json({ success: false, message: 'Contract has expired' });
+
+    /* ── 4. Build order document ── */
     const order = new Order({
       userId: user._id,
       symbol: symbol.toUpperCase(),
       companyName: companyName || stockData.companyName,
       tradingSymbol: (tradingSymbol || symbol).toUpperCase(),
-      instrumentType: (instrumentType || stockData.instrumentType).toUpperCase(),
+      instrumentType: instrumentType.toUpperCase(),
       contractType: contractType.toUpperCase(),
       expiryDate: expiryDate || stockData.expiryDate,
-      expiryMonth: (expiryMonth || stockData.expiryMonth)?.toUpperCase(),
+      expiryMonth: expiryMonth ? expiryMonth.toUpperCase() : stockData.expiryMonth,
       strikePrice: strikePrice || stockData.strikePrice,
       lotSize: lotSize || stockData.lotSize || 1,
-      orderType: orderType.toUpperCase(),
-      orderMode,
+      orderType: TYPE,
+      orderMode: MODE,
       quantity: parseInt(quantity),
       price: parseFloat(price),
-      stopLoss: stopLoss ? parseFloat(stopLoss) : null,
-      takeProfit: takeProfit ? parseFloat(takeProfit) : null,
-      totalAmount,
+      limitPrice: limitPrice ? parseFloat(limitPrice) : undefined,
+      stopLoss: stopLoss != null ? parseFloat(stopLoss) : undefined,
+      takeProfit: takeProfit != null ? parseFloat(takeProfit) : undefined,
+      totalAmount: parseInt(quantity) * parseFloat(price),
       status: 'PENDING',
-      platform: 'WEB',
       notes
     });
-    
-    const marginRequired = order.calculateMargin(user);
-    await order.calculateCharges(user);
-    
-    if (orderType.toUpperCase() === 'BUY') {
-      if (!user.hasEnoughMargin(marginRequired)) {
+
+    /* ── 5. Calculate margin ── */
+    order.calculateMargin(user);   // sets marginRequired, marginUsed, marginPercent
+
+    /* ── 6. Calculate charges ── */
+    order.calculateCharges(user);  // sets brokerage, gst, txnCharges, stampDuty, netAmount
+
+    /* ── 7. Calculate SL / TP amounts ── */
+    if (order.stopLoss || order.takeProfit) {
+      try { order.calculateSLTP(); }
+      catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    }
+
+    /* ── 8. Margin / Position checks ── */
+    if (TYPE === 'BUY') {
+      if (!user.hasEnoughMargin(order.netAmount))
         return res.status(400).json({
           success: false,
-          message: 'Insufficient margin',
-          required: marginRequired,
+          message: 'Insufficient margin balance',
+          required: order.netAmount,
           available: user.availableMargin
         });
-      }
+
+      // Block margin immediately (even for PENDING orders)
+      user.useMargin(order.marginUsed);
+      user.addBrokerage(order.brokerage);   // deducts from balance
+      await user.save();
+
     } else {
-      const position = await Position.findOne({
+      // SELL – must have an open LONG position
+      const existingPos = await Position.findOne({
         userId: user._id,
         symbol: symbol.toUpperCase(),
-        isOpen: true
+        positionType: 'LONG',
+        isActive: true
       });
-      
-      if (!position || position.quantity < quantity) {
+      if (!existingPos || existingPos.quantity < parseInt(quantity))
         return res.status(400).json({
           success: false,
-          message: 'Insufficient quantity to sell'
+          message: 'Insufficient open position to sell'
         });
-      }
     }
-    
-    if (orderType.toUpperCase() === 'BUY') {
-      await user.useMargin(marginRequired);
-    }
-    
+
     await order.save();
-    
-    if (orderMode === 'Market') {
-      order.status = 'COMPLETED';
-      order.executedAt = new Date();
-      order.executedPrice = price;
-      await order.save();
-      await createOrUpdatePosition(order, user);
+
+    /* ── 9. MARKET → execute immediately ── */
+    if (MODE === 'MARKET') {
+      await _executeOrder(order, user, parseFloat(price));
+      // user already saved inside _executeOrder
     }
-    
-    res.status(201).json({
+    // LIMIT / SL / SL-M  → stays PENDING
+    // pendingOrderMonitorJob will watch & execute
+
+    // ── 10. Firebase sync ──
+    syncSingleUserToFirebase(user._id.toString()).catch(console.error);
+
+    return res.status(201).json({
       success: true,
-      message: `Order ${order.status.toLowerCase()} successfully`,
+      message: MODE === 'MARKET'
+        ? '✅ Order executed & position created'
+        : `⏳ Order placed as PENDING (${MODE}) – will execute when price hits ₹${limitPrice}`,
       order: {
         orderId: order._id,
         symbol: order.symbol,
         orderType: order.orderType,
+        orderMode: order.orderMode,
         quantity: order.quantity,
         price: order.price,
+        limitPrice: order.limitPrice,
+        status: order.status,
+        // SL/TP
+        stopLoss: order.stopLoss,
+        stopLossAmount: order.stopLossAmount,
+        stopLossPercent: order.stopLossPercent,
+        takeProfit: order.takeProfit,
+        takeProfitAmount: order.takeProfitAmount,
+        takeProfitPercent: order.takeProfitPercent,
+        riskRewardRatio: order.riskRewardRatio,
+        // Charges
+        totalAmount: order.totalAmount,
         marginRequired: order.marginRequired,
         brokerage: order.brokerage,
-        netAmount: order.netAmount,
-        status: order.status
+        gst: order.gst,
+        stampDuty: order.stampDuty,
+        transactionCharges: order.transactionCharges,
+        taxesAndCharges: order.taxesAndCharges,
+        netAmount: order.netAmount
       },
-      user: {
+      userBalance: {
+        availableBalance: user.availableBalance,
+        usedMargin: user.usedMargin,
         availableMargin: user.availableMargin,
-        usedMargin: user.usedMargin
+        totalMargin: user.totalMargin
       }
     });
-    
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Error placing order', error: error.message });
+
+  } catch (e) {
+    console.error('❌ Order place error:', e);
+    res.status(500).json({ success: false, message: e.message });
   }
 });
-async function createOrUpdatePosition(order, user) {
-  const positionQuery = {
-    userId: user._id,
-    symbol: order.symbol,
-    tradingSymbol: order.tradingSymbol,
-    isOpen: true
-  };
-  
+
+// ─────────────────────────────────────────
+// PATCH /api/orders/:id/cancel
+// ─────────────────────────────────────────
+router.patch('/:orderId/cancel', auth, async (req, res) => {
+  try {
+    const order = await Order.findOne({ _id: req.params.orderId, userId: req.user.userId });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (order.status !== 'PENDING')
+      return res.status(400).json({ success: false, message: 'Only PENDING orders can be cancelled' });
+
+    order.status = 'CANCELLED';
+    order.cancelledAt = new Date();
+    order.cancelReason = req.body.reason || 'User cancelled';
+    await order.save();
+
+    // Release blocked margin for BUY orders
+    if (order.orderType === 'BUY' && order.marginUsed > 0) {
+      const user = await User.findById(req.user.userId);
+      user.releaseMargin(order.marginUsed);
+      user.availableBalance += order.brokerage; // refund brokerage
+      await user.save();
+      syncSingleUserToFirebase(user._id.toString()).catch(console.error);
+    }
+
+    res.json({ success: true, message: 'Order cancelled', data: order });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// POST /api/orders/close-position/:positionId
+// ─────────────────────────────────────────
+router.post('/close-position/:positionId', auth, async (req, res) => {
+  try {
+    const position = await Position.findOne({
+      _id: req.params.positionId,
+      userId: req.user.userId,
+      isActive: true
+    });
+    if (!position)
+      return res.status(404).json({ success: false, message: 'Active position not found' });
+
+    const user = await User.findById(req.user.userId);
+    const stock = await Stock.findOne({ symbol: position.symbol });
+    const exitPrice = req.body.exitPrice
+      ? parseFloat(req.body.exitPrice)
+      : (stock ? parseFloat(stock.currentPrice) : position.currentPrice);
+
+    const exitBrok = user.calculateBrokerage(position.quantity * exitPrice, position.quantity);
+    position.close(exitPrice, exitBrok);
+    await position.save();
+
+    user.releaseMargin(position.marginUsed);
+    user.totalPnL += position.realizedPnL;
+    user.todayPnL += position.realizedPnL;
+    user.totalBrokeragePaid += exitBrok;
+    await user.save();
+
+    syncSingleUserToFirebase(user._id.toString()).catch(console.error);
+
+    res.json({
+      success: true,
+      message: 'Position closed successfully',
+      realizedPnL: position.realizedPnL,
+      exitPrice,
+      userBalance: {
+        availableBalance: user.availableBalance,
+        usedMargin: user.usedMargin,
+        availableMargin: user.availableMargin,
+        totalPnL: user.totalPnL
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// Internal: _executeOrder(order, user, execPrice)
+// Called by: MARKET immediately, pendingMonitor for LIMIT/SL
+// ─────────────────────────────────────────
+async function _executeOrder(order, user, execPrice) {
+  order.status = 'COMPLETED';
+  order.executedAt = new Date();
+  order.executedPrice = execPrice;
+  order.filledQuantity = order.quantity;
+  order.averagePrice = execPrice;
+  await order.save();
+
   if (order.orderType === 'BUY') {
-    let position = await Position.findOne(positionQuery);
-    
-    if (position) {
-      const totalQty = position.quantity + order.quantity;
-      const totalCost = (position.quantity * position.avgPrice) + (order.quantity * order.price);
-      position.avgPrice = totalCost / totalQty;
-      position.quantity = totalQty;
-      position.currentPrice = order.price;
-      position.brokerage += order.brokerage;
-      position.totalCharges += order.taxesAndCharges;
-      position.marginUsed += order.marginUsed;
-      await position.save();
+    // Find or create LONG position
+    let pos = await Position.findOne({
+      userId: user._id,
+      symbol: order.symbol,
+      positionType: 'LONG',
+      isActive: true
+    });
+
+    if (pos) {
+      // Average-down / Average-up
+      const newQty = pos.quantity + order.quantity;
+      const newInvest = (pos.investmentValue + order.quantity * execPrice);
+      pos.entryPrice = newInvest / newQty;
+      pos.quantity = newQty;
+      pos.currentPrice = execPrice;
+      pos.investmentValue = newInvest;
+      pos.currentValue = newQty * execPrice;
+      pos.marginUsed += order.marginUsed;
+      pos.entryBrokerage += order.brokerage;
+      pos.totalBrokerage = pos.entryBrokerage + pos.exitBrokerage;
+      // Update SL/TP if provided in new order
+      if (order.stopLoss) pos.stopLoss = order.stopLoss;
+      if (order.takeProfit) pos.takeProfit = order.takeProfit;
+      await pos.save();
+      order.positionId = pos._id;
+      await order.save();
     } else {
-      position = new Position({
+      // New position
+      pos = new Position({
         userId: user._id,
-        orderId: order._id,
         symbol: order.symbol,
         companyName: order.companyName,
         tradingSymbol: order.tradingSymbol,
@@ -199,83 +350,69 @@ async function createOrUpdatePosition(order, user) {
         expiryMonth: order.expiryMonth,
         strikePrice: order.strikePrice,
         lotSize: order.lotSize,
-        type: 'BUY',
+        positionType: 'LONG',
         quantity: order.quantity,
-        avgPrice: order.price,
-        currentPrice: order.price,
+        entryPrice: execPrice,
+        currentPrice: execPrice,
         marginUsed: order.marginUsed,
-        marginType: order.marginType,
-        brokerage: order.brokerage,
-        totalCharges: order.taxesAndCharges,
-        isOpen: true
+        marginMultiplier: user.marginMultiplier,
+        entryBrokerage: order.brokerage,
+        totalBrokerage: order.brokerage,
+        investmentValue: order.quantity * execPrice,
+        currentValue: order.quantity * execPrice,
+        stopLoss: order.stopLoss,
+        takeProfit: order.takeProfit,
+        isActive: true
       });
-      await position.save();
+      await pos.save();
+      order.positionId = pos._id;
+      await order.save();
     }
+
   } else {
-    const position = await Position.findOne(positionQuery);
-    if (position) {
-      if (position.quantity <= order.quantity) {
-        await position.closePosition(order.price, order.brokerage, order.taxesAndCharges);
-        await user.releaseMargin(position.marginUsed);
-        user.todayPnL += position.realizedPnL;
-        user.totalPnL += position.realizedPnL;
-        await user.save();
-      } else {
-        const closedQty = order.quantity;
-        const partialPnL = (order.price - position.avgPrice) * closedQty - order.brokerage - order.taxesAndCharges;
-        position.quantity -= closedQty;
-        position.realizedPnL += partialPnL;
-        const marginToRelease = (position.marginUsed * closedQty) / (position.quantity + closedQty);
-        position.marginUsed -= marginToRelease;
-        await user.releaseMargin(marginToRelease);
-        user.todayPnL += partialPnL;
-        user.totalPnL += partialPnL;
-        await position.save();
-        await user.save();
-      }
+    // SELL → close / reduce LONG position
+    const pos = await Position.findOne({
+      userId: user._id,
+      symbol: order.symbol,
+      positionType: 'LONG',
+      isActive: true
+    });
+    if (!pos) return;
+
+    const exitBrok = order.brokerage;
+
+    if (pos.quantity <= order.quantity) {
+      // Full close
+      pos.close(execPrice, exitBrok);
+      await pos.save();
+      user.releaseMargin(pos.marginUsed);
+      user.totalPnL += pos.realizedPnL;
+      user.todayPnL += pos.realizedPnL;
+    } else {
+      // Partial close
+      const closedQty = order.quantity;
+      const proportion = closedQty / pos.quantity;
+      const partialInvest = pos.investmentValue * proportion;
+      const partialExit = closedQty * execPrice;
+      const partialPnL = partialExit - partialInvest - exitBrok;
+      const marginRelease = pos.marginUsed * proportion;
+
+      pos.quantity -= closedQty;
+      pos.investmentValue -= partialInvest;
+      pos.currentValue = pos.quantity * execPrice;
+      pos.marginUsed -= marginRelease;
+      pos.realizedPnL += partialPnL;
+      pos.exitBrokerage += exitBrok;
+      pos.totalBrokerage = pos.entryBrokerage + pos.exitBrokerage;
+      await pos.save();
+
+      user.releaseMargin(marginRelease);
+      user.totalPnL += partialPnL;
+      user.todayPnL += partialPnL;
     }
+    user.totalBrokeragePaid += exitBrok;
+    await user.save();
   }
 }
-// Cancel order
-router.patch('/:orderId/cancel', auth,autoSyncMiddleware('order'),  async (req, res) => {
-  try {
-    const order = await Order.findOne({
-      _id: req.params.orderId,
-      userId: req.user.userId
-    });
-    
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
-    }
-    
-    if (order.status !== 'PENDING') {
-      return res.status(400).json({
-        success: false,
-        message: 'Only pending orders can be cancelled'
-      });
-    }
-    
-    order.status = 'CANCELLED';
-    order.cancelledAt = new Date();
-    order.cancelReason = req.body.reason || 'User cancelled';
-    
-    await order.save();
-    
-    res.json({
-      success: true,
-      message: 'Order cancelled successfully',
-      data: order
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Error cancelling order',
-      error: error.message
-    });
-  }
-});
 
-module.exports = router;
+module.exports = { router, _executeOrder };

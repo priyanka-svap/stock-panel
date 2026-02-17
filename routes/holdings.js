@@ -5,7 +5,7 @@ const Holding = require('../models/Holding');
 const Stock = require('../models/Stock');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
-const { autoSyncMiddleware } = require('../middleware/firebaseSyncHooks');
+
 
 // Get all holdings
 router.get('/', auth,  autoSyncMiddleware('holding'), async (req, res) => {

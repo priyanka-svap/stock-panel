@@ -4,9 +4,9 @@ const router = express.Router();
 const Watchlist = require('../models/Watchlist');
 const Stock = require('../models/Stock');
 const auth = require('../middleware/auth');
-const { autoSyncMiddleware } = require('../middleware/firebaseSyncHooks');
 
-router.get('/', auth, autoSyncMiddleware('watchlist'), async (req, res) => {
+
+router.get('/', auth,  async (req, res) => {
   try {
     let watchlist = await Watchlist.findOne({ userId: req.user.userId });
     if (!watchlist) {
@@ -23,7 +23,7 @@ router.get('/', auth, autoSyncMiddleware('watchlist'), async (req, res) => {
   }
 });
 
-router.post('/add/:symbol', auth, autoSyncMiddleware('watchlist'), async (req, res) => {
+router.post('/add/:symbol', auth,  async (req, res) => {
   try {
     const watchlist = await Watchlist.findOne({ userId: req.user.userId }) ||
       new Watchlist({ userId: req.user.userId, stocks: [] });
@@ -39,7 +39,7 @@ router.post('/add/:symbol', auth, autoSyncMiddleware('watchlist'), async (req, r
   }
 });
 
-router.delete('/remove/:symbol', auth, autoSyncMiddleware('watchlist'), async (req, res) => {
+router.delete('/remove/:symbol', auth,  async (req, res) => {
   try {
     const watchlist = await Watchlist.findOne({ userId: req.user.userId });
     if (watchlist) {

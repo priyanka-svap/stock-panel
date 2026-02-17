@@ -1,278 +1,131 @@
-// jobs/sltpMonitorJob.js - AUTOMATIC STOP-LOSS & TAKE-PROFIT MONITORING
+// jobs/sltpMonitorJob.js
+// ✅ Monitors all ACTIVE positions for SL/TP triggers
+// ✅ Auto-executes exit order when SL or TP hit
+// ✅ Updates user balance, P&L, releases margin
+// ✅ Firebase synced after trigger
 
-const Order = require('../models/Order');
 const Position = require('../models/Position');
-const Stock = require('../models/Stock');
-const User = require('../models/User');
+const Stock    = require('../models/Stock');
+const User     = require('../models/User');
+const Order    = require('../models/Order');
+const { syncSingleUserToFirebase } = require('../services/userFirebaseService');
 
 let monitorInterval = null;
 
-// ===================================
-// MONITOR ALL ACTIVE POSITIONS
-// ===================================
 async function monitorSLTP() {
   try {
-    console.log('🎯 Monitoring SL/TP for all positions...');
-    
-    // Get all active positions with SL or TP
+    // Only positions that have SL or TP set
     const positions = await Position.find({
-      isOpen: true,
+      isActive: true,
       $or: [
-        { stopLoss: { $exists: true, $ne: null } },
+        { stopLoss:   { $exists: true, $ne: null } },
         { takeProfit: { $exists: true, $ne: null } }
       ]
-    }).populate('orderId userId');
-    
-    if (positions.length === 0) {
-      console.log('   No positions with SL/TP found');
-      return;
-    }
-    
-    console.log(`   Found ${positions.length} positions with SL/TP`);
-    
-    let triggered = 0;
-    
-    for (const position of positions) {
-      try {
-        // Get current price
-        const stock = await Stock.findOne({ 
-          symbol: position.symbol,
-          instrumentType: position.instrumentType
-        });
-        
-        if (!stock) {
-          console.log(`   ⚠️  Stock not found: ${position.symbol}`);
-          continue;
-        }
-        
-        const currentPrice = parseFloat(stock.currentPrice) || 0;
-        
-        if (currentPrice === 0) {
-          console.log(`   ⚠️  Invalid price for ${position.symbol}`);
-          continue;
-        }
-        
-        // Check if SL or TP triggered
-        const check = checkTrigger(position, currentPrice);
-        
-        if (check.triggered) {
-          triggered++;
-          
-          console.log(`\n   🔔 TRIGGER ALERT:`);
-          console.log(`      Symbol: ${position.symbol}`);
-          console.log(`      Type: ${check.stopLossHit ? 'STOP-LOSS' : 'TAKE-PROFIT'}`);
-          console.log(`      Entry: ₹${position.avgPrice}`);
-          console.log(`      Current: ₹${currentPrice}`);
-          console.log(`      Exit: ₹${check.exitPrice}`);
-          console.log(`      Action: ${check.action}`);
-          
-          // Execute exit order
-          await executeExitOrder(position, check, currentPrice);
-        }
-        
-      } catch (error) {
-        console.error(`   ❌ Error checking ${position.symbol}:`, error.message);
+    }).lean();
+
+    if (!positions.length) return;
+
+    const symbols  = [...new Set(positions.map(p => p.symbol))];
+    const stocks   = await Stock.find({ symbol: { $in: symbols } }).lean();
+    const priceMap = {};
+    stocks.forEach(s => { priceMap[s.symbol] = parseFloat(s.currentPrice) || 0; });
+
+    for (const pos of positions) {
+      const markPrice = priceMap[pos.symbol];
+      if (!markPrice) continue;
+
+      let triggered    = false;
+      let triggerType  = null;
+      let exitPrice    = null;
+
+      if (pos.positionType === 'LONG') {
+        if (pos.stopLoss   && markPrice <= pos.stopLoss)   { triggered = true; triggerType = 'SL'; exitPrice = pos.stopLoss; }
+        if (pos.takeProfit && markPrice >= pos.takeProfit) { triggered = true; triggerType = 'TP'; exitPrice = pos.takeProfit; }
+      } else {
+        if (pos.stopLoss   && markPrice >= pos.stopLoss)   { triggered = true; triggerType = 'SL'; exitPrice = pos.stopLoss; }
+        if (pos.takeProfit && markPrice <= pos.takeProfit) { triggered = true; triggerType = 'TP'; exitPrice = pos.takeProfit; }
       }
+
+      if (!triggered) continue;
+
+      // Reload fresh document
+      const position = await Position.findById(pos._id);
+      if (!position || !position.isActive) continue;
+
+      const user = await User.findById(pos.userId);
+      if (!user) continue;
+
+      console.log(`\n🔔 ${triggerType} TRIGGERED: ${pos.symbol} | Mark: ₹${markPrice} | Exit: ₹${exitPrice}`);
+
+      const exitBrok = user.calculateBrokerage(position.quantity * exitPrice, position.quantity);
+
+      // Close position
+      position.close(exitPrice, exitBrok);
+      await position.save();
+
+      // Update user
+      user.releaseMargin(pos.marginUsed);
+      user.totalPnL          += position.realizedPnL;
+      user.todayPnL          += position.realizedPnL;
+      user.totalBrokeragePaid += exitBrok;
+      await user.save();
+
+      // Record exit order
+      const exitOrder = new Order({
+        userId:        user._id,
+        symbol:        position.symbol,
+        companyName:   position.companyName,
+        tradingSymbol: position.tradingSymbol || position.symbol,
+        instrumentType: position.instrumentType || 'EQUITY',
+        contractType:  position.contractType || 'SPOT',
+        orderType:     position.positionType === 'LONG' ? 'SELL' : 'BUY',
+        orderMode:     'MARKET',
+        quantity:      position.quantity,
+        price:         exitPrice,
+        totalAmount:   position.quantity * exitPrice,
+        marginRequired: 0,
+        brokerage:     exitBrok,
+        netAmount:     exitBrok,
+        status:        'COMPLETED',
+        executedAt:    new Date(),
+        executedPrice: exitPrice,
+        positionId:    position._id,
+        notes:         `Auto-exit: ${triggerType} triggered at ₹${exitPrice}`
+      });
+      // need calculateCharges for gst/stamp
+      exitOrder.gst              = exitBrok * 0.18;
+      exitOrder.taxesAndCharges  = exitOrder.gst;
+      exitOrder.netAmount        = exitBrok + exitOrder.taxesAndCharges;
+      await exitOrder.save();
+
+      await syncSingleUserToFirebase(user._id.toString());
+
+      console.log(`   ✅ Position closed | realizedPnL: ₹${position.realizedPnL.toFixed(2)}`);
     }
-    
-    if (triggered > 0) {
-      console.log(`\n   ✅ Triggered ${triggered} positions`);
-    }
-    
-  } catch (error) {
-    console.error('❌ Error in SL/TP monitor:', error.message);
+
+  } catch (e) {
+    console.error('❌ SLTP monitor error:', e.message);
   }
 }
 
-// ===================================
-// CHECK IF SL/TP TRIGGERED
-// ===================================
-function checkTrigger(position, currentPrice) {
-  const triggers = {
-    triggered: false,
-    stopLossHit: false,
-    takeProfitHit: false,
-    action: null,
-    exitPrice: null,
-    pnl: 0
-  };
-  
-  if (position.type === 'BUY') {
-    // Check Stop-Loss (price fell below SL)
-    if (position.stopLoss && currentPrice <= position.stopLoss) {
-      triggers.triggered = true;
-      triggers.stopLossHit = true;
-      triggers.action = 'SELL';
-      triggers.exitPrice = position.stopLoss;
-      triggers.pnl = (position.stopLoss - position.avgPrice) * position.quantity;
-    }
-    
-    // Check Take-Profit (price rose above TP)
-    if (position.takeProfit && currentPrice >= position.takeProfit) {
-      triggers.triggered = true;
-      triggers.takeProfitHit = true;
-      triggers.action = 'SELL';
-      triggers.exitPrice = position.takeProfit;
-      triggers.pnl = (position.takeProfit - position.avgPrice) * position.quantity;
-    }
-    
-  } else {
-    // SELL position
-    // Check Stop-Loss (price rose above SL)
-    if (position.stopLoss && currentPrice >= position.stopLoss) {
-      triggers.triggered = true;
-      triggers.stopLossHit = true;
-      triggers.action = 'BUY';
-      triggers.exitPrice = position.stopLoss;
-      triggers.pnl = (position.avgPrice - position.stopLoss) * position.quantity;
-    }
-    
-    // Check Take-Profit (price fell below TP)
-    if (position.takeProfit && currentPrice <= position.takeProfit) {
-      triggers.triggered = true;
-      triggers.takeProfitHit = true;
-      triggers.action = 'BUY';
-      triggers.exitPrice = position.takeProfit;
-      triggers.pnl = (position.avgPrice - position.takeProfit) * position.quantity;
-    }
-  }
-  
-  return triggers;
-}
+function startSLTPMonitoring(intervalMs = 3000) {
+  if (monitorInterval) return;
 
-// ===================================
-// EXECUTE EXIT ORDER
-// ===================================
-async function executeExitOrder(position, trigger, currentPrice) {
-  try {
-    const user = await User.findById(position.userId);
-    
-    if (!user) {
-      console.error('   ❌ User not found');
-      return;
-    }
-    
-    // Create exit order
-    const exitOrder = new Order({
-      userId: position.userId,
-      symbol: position.symbol,
-      companyName: position.companyName,
-      tradingSymbol: position.tradingSymbol,
-      instrumentType: position.instrumentType,
-      contractType: position.contractType,
-      expiryDate: position.expiryDate,
-      expiryMonth: position.expiryMonth,
-      strikePrice: position.strikePrice,
-      lotSize: position.lotSize,
-      orderType: trigger.action, // SELL or BUY
-      orderMode: 'MARKET',
-      quantity: position.quantity,
-      price: trigger.exitPrice,
-      totalAmount: position.quantity * trigger.exitPrice,
-      status: 'COMPLETED',
-      executedAt: new Date(),
-      executedPrice: trigger.exitPrice,
-      notes: trigger.stopLossHit ? 'Auto-executed: Stop-Loss triggered' : 'Auto-executed: Take-Profit triggered'
-    });
-    
-    // Calculate charges
-    await exitOrder.calculateCharges(user);
-    await exitOrder.save();
-    
-    // Close position
-    await position.closePosition(trigger.exitPrice, exitOrder.brokerage);
-    
-    // Update order references
-    if (position.orderId) {
-      const originalOrder = await Order.findById(position.orderId);
-      if (originalOrder) {
-        if (trigger.stopLossHit) {
-          originalOrder.stopLossTriggered = true;
-        }
-        if (trigger.takeProfitHit) {
-          originalOrder.takeProfitTriggered = true;
-        }
-        await originalOrder.save();
-      }
-    }
-    
-    // Release margin
-    await user.releaseMargin(position.marginUsed);
-    
-    // Update user P&L
-    user.todayPnL += position.netPnL;
-    user.totalPnL += position.netPnL;
-    await user.save();
-    
-    console.log(`   ✅ Exit order executed:`);
-    console.log(`      Order ID: ${exitOrder._id}`);
-    console.log(`      Exit Price: ₹${trigger.exitPrice}`);
-    console.log(`      Gross P&L: ₹${trigger.pnl.toFixed(2)}`);
-    console.log(`      Charges: ₹${exitOrder.brokerage + exitOrder.taxesAndCharges}`);
-    console.log(`      Net P&L: ₹${position.netPnL.toFixed(2)}`);
-    
-  } catch (error) {
-    console.error('   ❌ Error executing exit order:', error.message);
-  }
-}
+  console.log('\n' + '─'.repeat(55));
+  console.log('🎯 SL/TP MONITOR STARTED');
+  console.log(`   Interval: every ${intervalMs/1000}s`);
+  console.log('─'.repeat(55));
 
-// ===================================
-// START MONITORING
-// ===================================
-function startSLTPMonitoring(intervalMs = 5000) {
-  if (monitorInterval) {
-    console.log('⚠️  SL/TP monitoring already running');
-    return;
-  }
-  
-  console.log('\n' + '='.repeat(60));
-  console.log('🎯 STOP-LOSS & TAKE-PROFIT MONITOR STARTED');
-  console.log('='.repeat(60));
-  console.log(`⏱️  Check Interval: Every ${intervalMs / 1000} seconds`);
-  console.log('='.repeat(60) + '\n');
-  
-  // Initial check
   monitorSLTP();
-  
-  // Set interval
   monitorInterval = setInterval(monitorSLTP, intervalMs);
-  
-  console.log('✅ SL/TP monitoring active\n');
 }
 
-// ===================================
-// STOP MONITORING
-// ===================================
 function stopSLTPMonitoring() {
-  if (monitorInterval) {
-    clearInterval(monitorInterval);
-    monitorInterval = null;
-    console.log('\n🛑 SL/TP monitoring stopped\n');
-  }
+  if (monitorInterval) { clearInterval(monitorInterval); monitorInterval = null; }
+  console.log('🛑 SL/TP monitor stopped');
 }
 
-// ===================================
-// GRACEFUL SHUTDOWN
-// ===================================
-process.on('SIGINT', () => {
-  console.log('\n⚠️  Received SIGINT signal...');
-  stopSLTPMonitoring();
-  process.exit(0);
-});
+process.on('SIGINT',  () => { stopSLTPMonitoring(); process.exit(0); });
+process.on('SIGTERM', () => { stopSLTPMonitoring(); process.exit(0); });
 
-process.on('SIGTERM', () => {
-  console.log('\n⚠️  Received SIGTERM signal...');
-  stopSLTPMonitoring();
-  process.exit(0);
-});
-
-// ===================================
-// EXPORTS
-// ===================================
-module.exports = {
-  startSLTPMonitoring,
-  stopSLTPMonitoring,
-  monitorSLTP,
-  checkTrigger,
-  executeExitOrder
-};
+module.exports = { startSLTPMonitoring, stopSLTPMonitoring, monitorSLTP };

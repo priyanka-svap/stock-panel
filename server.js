@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const http = require('http');
 require('dotenv').config();
-const { startContinuousUpdates, stopContinuousUpdates } = require('./jobs/firebaseUpdateJob');
+
 const app = express();
 const server = http.createServer(app);
 
@@ -23,8 +23,9 @@ app.use('/api/admin', require('./routes/admin'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/stocks', require('./routes/stocks'));
 app.use('/api/indices', require('./routes/indices'));
-app.use('/api/orders', require('./routes/orders'));
-app.use('/api/holdings', require('./routes/holdings'));
+const ordersModule = require('./routes/orders');
+app.use('/api/orders', ordersModule.router);
+// app.use('/api/holdings', require('./routes/holdings'));
 app.use('/api/positions', require('./routes/positions'));
 app.use('/api/watchlist', require('./routes/watchlist'));
 app.use('/api/funds', require('./routes/funds'));
@@ -53,36 +54,41 @@ app.get('/health', (req, res) => {
 // =====================================================
 // FIREBASE REAL-TIME UPDATES (No Admin SDK!)
 // =====================================================
+const { startContinuousUpdates, stopContinuousUpdates } = require('./jobs/firebaseUpdateJob');
+const { startUserDataSync }       = require('./jobs/userDataSyncJob');
+const { startSLTPMonitoring }     = require('./jobs/sltpMonitorJob');
+const { startPendingOrderMonitor }= require('./jobs/pendingOrderMonitorJob');
 
-const { startUserDataSync } = require('./jobs/userDataSyncJob');
-
-const { startSLTPMonitoring } = require('./jobs/sltpMonitorJob');
-
-
-
+// ──────────────────────────────────────────
+// DATABASE + START
+// ──────────────────────────────────────────
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/stockPanelDB')
-  .then(async () => {
-    console.log('✅ Connected to MongoDB');
+  .then(() => {
+    console.log('✅ MongoDB connected');
 
-    // Start Firebase updates
+    // 1. Stock/Index price updates → Firebase  (every 2s)
     startContinuousUpdates();
-    startUserDataSync(5);
-    // Fast (every 1 second):
-    startSLTPMonitoring(1000);
 
-   
+    // 2. User data → Firebase: full sync every 10s + P&L every 3s
+    startUserDataSync(10, 3000);
 
-    console.log('━'.repeat(60));
-    console.log('🔥 Firebase Real-time Updates ACTIVE');
-    console.log('⚡ Updates: Every 1-2 seconds');
-    console.log('📡 Method: REST API (No credentials!)');
-    console.log('━'.repeat(60));
+    // 3. PENDING order monitor: LIMIT/SL/SL-M execution  (every 2s)
+    startPendingOrderMonitor(2000);
 
+    // 4. SL/TP auto-exit monitor  (every 3s)
+    startSLTPMonitoring(3000);
+
+    console.log('\n' + '═'.repeat(55));
+    console.log('🚀 All systems running:');
+    console.log('   📈 Stock price updates  → every 2s');
+    console.log('   👤 User P&L (Firebase)  → every 3s');
+    console.log('   ⚡ Pending order check  → every 2s');
+    console.log('   🎯 SL/TP monitor        → every 3s');
+    console.log('   🔄 Full user sync       → every 10s');
+    console.log('═'.repeat(55) + '\n');
   })
-  .catch(err => {
-    console.error('❌ MongoDB connection error:', err);
-    process.exit(1);
-  });
+  .catch(err => { console.error('❌ MongoDB error:', err); process.exit(1); });
+
 // ============================================
 // START SERVER
 // ============================================
