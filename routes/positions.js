@@ -126,7 +126,7 @@ router.post('/close/:id', auth, async (req, res) => {
         
         // Find position
         const position = await Position.findOne({
-            _id: req.params.id,
+            _id: ObjectId(req.params.id),
             userId: req.user.userId,
             isActive: true
         });
