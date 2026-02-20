@@ -1,3 +1,5 @@
+
+
 // models/Position.js — Fixed: added stopLoss, takeProfit + all fields orders.js needs
 
 const mongoose = require('mongoose');
@@ -80,8 +82,37 @@ const positionSchema = new mongoose.Schema({
   takeProfitTriggered:{ type: Boolean, default: false },
   closeReason: {
     type: String,
-    enum: ['STOP_LOSS', 'TARGET', 'MANUAL', 'EXPIRY', null],
+    enum: ['STOP_LOSS', 'TARGET', 'LIQUIDATION', 'MANUAL', 'EXPIRY', null],
     default: null
+  },
+
+  // ── 💀 LIQUIDATION PRICE ──────────────────────────────────────────────────
+  // Price at which margin is completely wiped → broker force-closes position
+  // LONG:  liquidationPrice = entryPrice - (marginUsed / quantity)
+  // SHORT: liquidationPrice = entryPrice + (marginUsed / quantity)
+  // Updated on every save (when marginUsed or entryPrice changes)
+  liquidationPrice: {
+    type: Number,
+    default: null,
+    comment: 'Force-close price when margin = 0'
+  },
+  // % drop/rise from currentPrice to liquidation (updated by sync job)
+  liquidationDistance: {
+    type: Number,
+    default: null,
+    comment: '|currentPrice - liquidationPrice| / currentPrice * 100'
+  },
+  // Warning flags (set by sync job based on proximity to liquidation)
+  liquidationRisk: {
+    type: String,
+    enum: ['safe', 'warning', 'danger', 'liquidated', null],
+    default: null,
+    comment: 'safe >5% | warning 2-5% | danger <2% | liquidated = hit'
+  },
+  isLiquidated: {
+    type: Boolean,
+    default: false,
+    comment: 'true when force-closed due to margin exhaustion'
   },
 
   // ── Margin system ─────────────────────────────────────────────────────────
@@ -152,6 +183,7 @@ const positionSchema = new mongoose.Schema({
 positionSchema.index({ userId: 1, isActive: 1 });
 positionSchema.index({ symbol: 1, isActive: 1 });
 positionSchema.index({ stopLoss: 1, takeProfit: 1 }); // for SL/TP monitor queries
+positionSchema.index({ liquidationPrice: 1, isActive: 1 }); // for liquidation monitor
 
 // ─── Pre-save: sync alias fields + recalculate P&L ───────────────────────
 positionSchema.pre('save', function(next) {
@@ -165,6 +197,18 @@ positionSchema.pre('save', function(next) {
   // Keep isOpen ↔ isActive in sync
   if (this.isModified('isActive')) this.isOpen = this.isActive;
   if (this.isModified('isOpen'))   this.isActive = this.isOpen;
+
+  // ── Liquidation price (recalculate when margin or entry changes) ─────────
+  if (this.marginUsed > 0 && this.quantity > 0 && this.entryPrice > 0) {
+    const marginPerUnit = this.marginUsed / this.quantity;
+    if (this.positionType === 'LONG') {
+      // LONG: price falls to wipe margin
+      this.liquidationPrice = parseFloat((this.entryPrice - marginPerUnit).toFixed(2));
+    } else {
+      // SHORT: price rises to wipe margin
+      this.liquidationPrice = parseFloat((this.entryPrice + marginPerUnit).toFixed(2));
+    }
+  }
 
   // Recalculate P&L if price or qty changed
   if (!this.isActive) return next(); // don't recalc on closed position
@@ -181,6 +225,17 @@ positionSchema.pre('save', function(next) {
 
   if (this.investmentValue > 0) {
     this.pnlPercentage = (this.pnl / this.investmentValue) * 100;
+  }
+
+  // Liquidation distance from current price
+  if (this.liquidationPrice && this.currentPrice > 0) {
+    this.liquidationDistance = parseFloat(
+      (Math.abs(this.currentPrice - this.liquidationPrice) / this.currentPrice * 100).toFixed(4)
+    );
+    // Risk level
+    if (this.liquidationDistance <= 2)      this.liquidationRisk = 'danger';
+    else if (this.liquidationDistance <= 5) this.liquidationRisk = 'warning';
+    else                                    this.liquidationRisk = 'safe';
   }
 
   next();
@@ -200,6 +255,30 @@ positionSchema.methods.updatePrice = function(newPrice) {
   if (this.investmentValue > 0) {
     this.pnlPercentage = (this.pnl / this.investmentValue) * 100;
   }
+};
+
+// ─── Method: calculate liquidation price ─────────────────────────────────
+// Liquidation = price at which total margin is exhausted
+// LONG:  liqPrice = entryPrice - (marginUsed / quantity)
+// SHORT: liqPrice = entryPrice + (marginUsed / quantity)
+// With maintenance margin buffer (default 10%): broker calls before full exhaustion
+positionSchema.methods.calculateLiquidationPrice = function(maintenanceMarginPct = 0.10) {
+  if (!this.marginUsed || !this.quantity || !this.entryPrice) return null;
+
+  const marginPerUnit     = this.marginUsed / this.quantity;
+  const maintenanceBuffer = this.entryPrice * maintenanceMarginPct;
+
+  let liqPrice;
+  if (this.positionType === 'LONG') {
+    // Price needs to fall by marginPerUnit to wipe out margin
+    // Subtract maintenance buffer so margin call triggers before full liquidation
+    liqPrice = this.entryPrice - marginPerUnit + maintenanceBuffer;
+  } else {
+    // Price needs to rise by marginPerUnit to wipe out margin
+    liqPrice = this.entryPrice + marginPerUnit - maintenanceBuffer;
+  }
+
+  return parseFloat(Math.max(0, liqPrice).toFixed(2));
 };
 
 // ─── Method: set / update SL and Target ─────────────────────────────────
@@ -246,6 +325,7 @@ positionSchema.methods.close = function(exitPrice, exitBrokerage = 0, reason = '
   this.isActive       = false;
   this.isOpen         = false;
   this.closeReason    = reason;
+  if (reason === 'LIQUIDATION') this.isLiquidated = true;
 
   const exitValue = exitPrice * this.quantity;
 
@@ -280,6 +360,14 @@ positionSchema.virtual('tpDistance').get(function() {
   const tp = this.takeProfit || this.target;
   if (!tp || !this.currentPrice) return null;
   return Math.abs(this.currentPrice - tp);
+});
+
+positionSchema.virtual('liquidationRiskLabel').get(function() {
+  const risk = this.liquidationRisk;
+  if (risk === 'danger')  return '🔴 Danger — Near Liquidation';
+  if (risk === 'warning') return '🟡 Warning — Monitor Closely';
+  if (risk === 'safe')    return '🟢 Safe';
+  return null;
 });
 
 positionSchema.virtual('hasSL').get(function() {
