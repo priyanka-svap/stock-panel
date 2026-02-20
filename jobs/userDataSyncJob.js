@@ -223,6 +223,50 @@ async function updateAllUsersPnL() {
           toAutoClose.push({ pos, markPrice, reason: sltpHit });
         }
 
+        // ── Liquidation price ─────────────────────────────────────────────
+        // Price at which margin is fully exhausted → force close
+        // LONG:  liqPrice = entryPrice - (marginUsed / qty)
+        // SHORT: liqPrice = entryPrice + (marginUsed / qty)
+        const marginUsed    = pos.usedMargin || pos.marginUsed || 0;
+        const marginPerUnit = marginUsed > 0 && pos.quantity > 0
+          ? marginUsed / pos.quantity
+          : 0;
+
+        let liquidationPrice = null;
+        let liquidationDist  = null;   // ₹ distance from current price
+        let liquidationPct   = null;   // % distance from current price
+        let liquidationRisk  = 'safe'; // 'safe' | 'warning' | 'danger' | 'liquidated'
+
+        if (marginPerUnit > 0 && pos.entryPrice > 0) {
+          liquidationPrice = isLong
+            ? parseFloat((pos.entryPrice - marginPerUnit).toFixed(2))
+            : parseFloat((pos.entryPrice + marginPerUnit).toFixed(2));
+
+          liquidationDist = parseFloat(Math.abs(markPrice - liquidationPrice).toFixed(2));
+          liquidationPct  = markPrice > 0
+            ? parseFloat((liquidationDist / markPrice * 100).toFixed(4))
+            : null;
+
+          // Risk levels
+          if (liquidationPct !== null) {
+            if (liquidationPct <= 2)      liquidationRisk = 'danger';
+            else if (liquidationPct <= 5) liquidationRisk = 'warning';
+            else                          liquidationRisk = 'safe';
+          }
+
+          // Check if liquidation price already breached
+          const liqHit = isLong
+            ? markPrice <= liquidationPrice
+            : markPrice >= liquidationPrice;
+
+          if (liqHit) {
+            liquidationRisk = 'liquidated';
+            if (!autoCloseInProgress.has(posId)) {
+              toAutoClose.push({ pos, markPrice, reason: 'liquidation' });
+            }
+          }
+        }
+
         // Build Firebase update for this position
         Object.assign(fbUpdates, {
           // P&L
@@ -242,8 +286,14 @@ async function updateAllUsersPnL() {
           [`users/${uid}/positions/${posId}/tgtDistancePct`]: takeProfit > 0 ? parseFloat(tgtDistPct.toFixed(4)) : null,
 
           // SLTP status
-          [`users/${uid}/positions/${posId}/sltpStatus`]:     sltpStatus,
-          [`users/${uid}/positions/${posId}/sltpHit`]:        sltpHit || null,
+          [`users/${uid}/positions/${posId}/sltpStatus`]:         sltpStatus,
+          [`users/${uid}/positions/${posId}/sltpHit`]:            sltpHit || null,
+
+          // 💀 Liquidation
+          [`users/${uid}/positions/${posId}/liquidationPrice`]:   liquidationPrice,
+          [`users/${uid}/positions/${posId}/liquidationDist`]:    liquidationDist,
+          [`users/${uid}/positions/${posId}/liquidationPct`]:     liquidationPct,
+          [`users/${uid}/positions/${posId}/liquidationRisk`]:    liquidationRisk,
 
           // Meta
           [`users/${uid}/positions/${posId}/symbol`]:         pos.symbol,

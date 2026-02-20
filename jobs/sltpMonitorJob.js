@@ -14,12 +14,14 @@ let monitorInterval = null;
 
 async function monitorSLTP() {
   try {
-    // Only positions that have SL or TP set
+    // Fetch all active positions — SL/TP positions + margin positions (for liquidation)
     const positions = await Position.find({
       isActive: true,
       $or: [
         { stopLoss:   { $exists: true, $ne: null } },
-        { takeProfit: { $exists: true, $ne: null } }
+        { takeProfit: { $exists: true, $ne: null } },
+        { usedMargin: { $gt: 0 } },    // margin positions need liquidation monitoring
+        { marginUsed: { $gt: 0 } }
       ]
     }).lean();
 
@@ -38,12 +40,39 @@ async function monitorSLTP() {
       let triggerType  = null;
       let exitPrice    = null;
 
+      // ── SL / TP check ──────────────────────────────────────────────────
       if (pos.positionType === 'LONG') {
-        if (pos.stopLoss   && markPrice <= pos.stopLoss)   { triggered = true; triggerType = 'SL'; exitPrice = pos.stopLoss; }
-        if (pos.takeProfit && markPrice >= pos.takeProfit) { triggered = true; triggerType = 'TP'; exitPrice = pos.takeProfit; }
+        if (pos.stopLoss   && markPrice <= pos.stopLoss)   { triggered = true; triggerType = 'SL';          exitPrice = pos.stopLoss; }
+        if (pos.takeProfit && markPrice >= pos.takeProfit) { triggered = true; triggerType = 'TP';          exitPrice = pos.takeProfit; }
       } else {
-        if (pos.stopLoss   && markPrice >= pos.stopLoss)   { triggered = true; triggerType = 'SL'; exitPrice = pos.stopLoss; }
-        if (pos.takeProfit && markPrice <= pos.takeProfit) { triggered = true; triggerType = 'TP'; exitPrice = pos.takeProfit; }
+        if (pos.stopLoss   && markPrice >= pos.stopLoss)   { triggered = true; triggerType = 'SL';          exitPrice = pos.stopLoss; }
+        if (pos.takeProfit && markPrice <= pos.takeProfit) { triggered = true; triggerType = 'TP';          exitPrice = pos.takeProfit; }
+      }
+
+      // ── 💀 LIQUIDATION check ────────────────────────────────────────────
+      // If no SL/TP triggered yet, check if margin has been exhausted
+      if (!triggered) {
+        const marginUsed    = pos.usedMargin || pos.marginUsed || 0;
+        const marginPerUnit = marginUsed > 0 && pos.quantity > 0
+          ? marginUsed / pos.quantity
+          : 0;
+
+        if (marginPerUnit > 0 && pos.entryPrice > 0) {
+          const liqPrice = pos.positionType === 'LONG'
+            ? pos.entryPrice - marginPerUnit
+            : pos.entryPrice + marginPerUnit;
+
+          const liqHit = pos.positionType === 'LONG'
+            ? markPrice <= liqPrice
+            : markPrice >= liqPrice;
+
+          if (liqHit) {
+            triggered   = true;
+            triggerType = 'LIQUIDATION';
+            exitPrice   = parseFloat(liqPrice.toFixed(2));
+            console.log(`\n💀 LIQUIDATION triggered: ${pos.symbol} | liqPrice: ₹${exitPrice} | markPrice: ₹${markPrice}`);
+          }
+        }
       }
 
       if (!triggered) continue;
@@ -55,12 +84,16 @@ async function monitorSLTP() {
       const user = await User.findById(pos.userId);
       if (!user) continue;
 
-      console.log(`\n🔔 ${triggerType} TRIGGERED: ${pos.symbol} | Mark: ₹${markPrice} | Exit: ₹${exitPrice}`);
+      const triggerEmoji = triggerType === 'LIQUIDATION' ? '💀' : '🔔';
+      console.log(`\n${triggerEmoji} ${triggerType} TRIGGERED: ${pos.symbol} | Mark: ₹${markPrice} | Exit: ₹${exitPrice}`);
 
       const exitBrok = user.calculateBrokerage(position.quantity * exitPrice, position.quantity);
 
       // Close position
-      position.close(exitPrice, exitBrok);
+      const closeReason = triggerType === 'SL' ? 'STOP_LOSS'
+        : triggerType === 'TP' ? 'TARGET'
+        : 'LIQUIDATION';
+      position.close(exitPrice, exitBrok, closeReason);
       await position.save();
 
       // Update user
@@ -90,7 +123,9 @@ async function monitorSLTP() {
         executedAt:    new Date(),
         executedPrice: exitPrice,
         positionId:    position._id,
-        notes:         `Auto-exit: ${triggerType} triggered at ₹${exitPrice}`
+        notes:         triggerType === 'LIQUIDATION'
+          ? `⚠️ LIQUIDATED: Margin exhausted @ ₹${exitPrice}`
+          : `Auto-exit: ${triggerType} triggered at ₹${exitPrice}`
       });
       // need calculateCharges for gst/stamp
       exitOrder.gst              = exitBrok * 0.18;
