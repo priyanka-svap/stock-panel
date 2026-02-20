@@ -1,4 +1,5 @@
-// models/Position.js - UPDATED FOR MARGIN SYSTEM
+// models/Position.js — Fixed: added stopLoss, takeProfit + all fields orders.js needs
+
 const mongoose = require('mongoose');
 
 const positionSchema = new mongoose.Schema({
@@ -7,16 +8,38 @@ const positionSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+
+  // ── Stock / Contract details ──────────────────────────────────────────────
   symbol: {
     type: String,
     required: true,
     uppercase: true
   },
+  companyName:    { type: String },
+  tradingSymbol:  { type: String, uppercase: true },
+  instrumentType: {
+    type: String,
+    enum: ['EQUITY', 'FUTIDX', 'FUTSTK', 'OPTIDX', 'OPTSTK', 'COMMODITY'],
+    default: 'EQUITY'
+  },
+  contractType: {
+    type: String,
+    enum: ['SPOT', 'FUTURES', 'CE', 'PE'],
+    default: 'SPOT'
+  },
+  expiryDate:  { type: Date },
+  expiryMonth: { type: String, uppercase: true },
+  strikePrice: { type: Number },
+  lotSize:     { type: Number, default: 1 },
+
+  // ── Position direction ────────────────────────────────────────────────────
   positionType: {
     type: String,
     enum: ['LONG', 'SHORT'],
     required: true
   },
+
+  // ── Quantity & Prices ─────────────────────────────────────────────────────
   quantity: {
     type: Number,
     required: true,
@@ -30,51 +53,67 @@ const positionSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
-  
-  // MARGIN SYSTEM - NEW
+  exitPrice: {
+    type: Number,
+    default: null
+  },
+
+  // ── 🎯 STOP LOSS & TAKE PROFIT ────────────────────────────────────────────
+  stopLoss: {
+    type: Number,
+    default: null,
+    comment: 'SL price — auto-exit when price hits this'
+  },
+  takeProfit: {
+    type: Number,
+    default: null,
+    comment: 'Target price — auto-exit when price hits this'
+  },
+  // Convenience alias used by some routes (maps to takeProfit)
+  target: {
+    type: Number,
+    default: null
+  },
+
+  // SL/TP hit status (written by userDataSyncJob)
+  stopLossTriggered:  { type: Boolean, default: false },
+  takeProfitTriggered:{ type: Boolean, default: false },
+  closeReason: {
+    type: String,
+    enum: ['STOP_LOSS', 'TARGET', 'MANUAL', 'EXPIRY', null],
+    default: null
+  },
+
+  // ── Margin system ─────────────────────────────────────────────────────────
   marginUsed: {
     type: Number,
-    required: true,
+    default: 0,
     comment: 'Margin blocked for this position'
   },
   marginMultiplier: {
     type: Number,
-    default: 1,
-    comment: 'Margin multiplier when position opened'
+    default: 1
   },
-  
-  // BROKERAGE SYSTEM - NEW
-  entryBrokerage: {
-    type: Number,
-    default: 0,
-    comment: 'Brokerage paid at entry'
-  },
-  exitBrokerage: {
-    type: Number,
-    default: 0,
-    comment: 'Brokerage paid at exit'
-  },
-  totalBrokerage: {
-    type: Number,
-    default: 0,
-    comment: 'Total brokerage for this position'
-  },
-  
-  // P&L CALCULATION
+
+  // ── Brokerage ─────────────────────────────────────────────────────────────
+  entryBrokerage: { type: Number, default: 0 },
+  exitBrokerage:  { type: Number, default: 0 },
+  totalBrokerage: { type: Number, default: 0 },
+
+  // ── P&L ──────────────────────────────────────────────────────────────────
   investmentValue: {
     type: Number,
     required: true,
-    comment: 'Entry price * quantity + entry brokerage'
+    comment: 'entryPrice × quantity (used as cost basis)'
   },
   currentValue: {
     type: Number,
     required: true,
-    comment: 'Current price * quantity'
+    comment: 'currentPrice × quantity'
   },
   pnl: {
     type: Number,
-    default: 0,
-    comment: 'Current P&L (includes brokerage)'
+    default: 0
   },
   pnlPercentage: {
     type: Number,
@@ -82,108 +121,176 @@ const positionSchema = new mongoose.Schema({
   },
   realizedPnL: {
     type: Number,
-    default: 0,
-    comment: 'P&L after closing position'
+    default: 0
   },
-  
-  // DATES
-  entryDate: {
-    type: Date,
-    default: Date.now
+  finalPnL: {
+    type: Number,
+    default: null,
+    comment: 'Set on close — final P&L after all charges'
   },
-  exitDate: {
-    type: Date
-  },
-  
-  // EXPIRY (for F&O)
-  hasExpiry: {
-    type: Boolean,
-    default: false
-  },
-  expiryDate: {
-    type: Date
-  },
-  expiryMonth: {
-    type: String
-  },
-  expiryYear: {
-    type: Number
-  },
-  
+
+  // ── Dates ─────────────────────────────────────────────────────────────────
+  entryDate: { type: Date, default: Date.now },
+  exitDate:  { type: Date, default: null },
+  exitedAt:  { type: Date, default: null },   // alias written by sync job
+
+  // ── Status ────────────────────────────────────────────────────────────────
   isActive: {
     type: Boolean,
-    default: true
-  }
-}, {
-  timestamps: true
-});
+    default: true,
+    comment: 'true = open, false = closed'
+  },
+  isOpen: {
+    type: Boolean,
+    default: true,
+    comment: 'Alias of isActive — for query compatibility'
+  },
 
-// Calculate P&L before saving
+}, { timestamps: true });
+
+// ─── Indexes ──────────────────────────────────────────────────────────────
+positionSchema.index({ userId: 1, isActive: 1 });
+positionSchema.index({ symbol: 1, isActive: 1 });
+positionSchema.index({ stopLoss: 1, takeProfit: 1 }); // for SL/TP monitor queries
+
+// ─── Pre-save: sync alias fields + recalculate P&L ───────────────────────
 positionSchema.pre('save', function(next) {
-  // Update current value
-  this.currentValue = this.currentPrice * this.quantity;
-  
-  // Calculate P&L based on position type
-  if (this.positionType === 'LONG') {
-    // LONG: Profit when price goes up
-    const grossPnL = this.currentValue - this.investmentValue;
-    this.pnl = grossPnL - this.totalBrokerage;
-  } else {
-    // SHORT: Profit when price goes down
-    const grossPnL = this.investmentValue - this.currentValue;
-    this.pnl = grossPnL - this.totalBrokerage;
+  // Keep target ↔ takeProfit in sync
+  if (this.isModified('takeProfit') && this.takeProfit != null) {
+    this.target = this.takeProfit;
+  } else if (this.isModified('target') && this.target != null) {
+    this.takeProfit = this.target;
   }
-  
-  // Calculate percentage
+
+  // Keep isOpen ↔ isActive in sync
+  if (this.isModified('isActive')) this.isOpen = this.isActive;
+  if (this.isModified('isOpen'))   this.isActive = this.isOpen;
+
+  // Recalculate P&L if price or qty changed
+  if (!this.isActive) return next(); // don't recalc on closed position
+
+  this.currentValue = this.currentPrice * this.quantity;
+
+  if (this.positionType === 'LONG') {
+    const gross = this.currentValue - this.investmentValue;
+    this.pnl    = gross - this.totalBrokerage;
+  } else {
+    const gross = this.investmentValue - this.currentValue;
+    this.pnl    = gross - this.totalBrokerage;
+  }
+
   if (this.investmentValue > 0) {
     this.pnlPercentage = (this.pnl / this.investmentValue) * 100;
   }
-  
+
   next();
 });
 
-// Method to update current price and recalculate P&L
+// ─── Method: update live price + recalculate P&L ────────────────────────
 positionSchema.methods.updatePrice = function(newPrice) {
   this.currentPrice = newPrice;
-  this.currentValue = this.currentPrice * this.quantity;
-  
+  this.currentValue = newPrice * this.quantity;
+
   if (this.positionType === 'LONG') {
-    const grossPnL = this.currentValue - this.investmentValue;
-    this.pnl = grossPnL - this.totalBrokerage;
+    this.pnl = (this.currentValue - this.investmentValue) - this.totalBrokerage;
   } else {
-    const grossPnL = this.investmentValue - this.currentValue;
-    this.pnl = grossPnL - this.totalBrokerage;
+    this.pnl = (this.investmentValue - this.currentValue) - this.totalBrokerage;
   }
-  
+
   if (this.investmentValue > 0) {
     this.pnlPercentage = (this.pnl / this.investmentValue) * 100;
   }
 };
 
-// Method to close position
-positionSchema.methods.close = function(exitPrice, exitBrokerage) {
-  this.currentPrice = exitPrice;
-  this.exitBrokerage = exitBrokerage;
-  this.totalBrokerage = this.entryBrokerage + this.exitBrokerage;
-  this.exitDate = new Date();
-  this.isActive = false;
-  
-  // Calculate final realized P&L
-  this.currentValue = exitPrice * this.quantity;
-  
-  if (this.positionType === 'LONG') {
-    const grossPnL = this.currentValue - this.investmentValue;
-    this.realizedPnL = grossPnL - this.totalBrokerage;
+// ─── Method: set / update SL and Target ─────────────────────────────────
+positionSchema.methods.setSLTP = function({ stopLoss, takeProfit } = {}) {
+  if (stopLoss   != null) { this.stopLoss   = parseFloat(stopLoss);   }
+  if (takeProfit != null) { this.takeProfit = parseFloat(takeProfit); this.target = this.takeProfit; }
+
+  // Validate direction
+  if (this.stopLoss != null && this.positionType === 'LONG' && this.stopLoss >= this.entryPrice)
+    throw new Error('Stop Loss for LONG position must be below entry price');
+  if (this.stopLoss != null && this.positionType === 'SHORT' && this.stopLoss <= this.entryPrice)
+    throw new Error('Stop Loss for SHORT position must be above entry price');
+  if (this.takeProfit != null && this.positionType === 'LONG' && this.takeProfit <= this.entryPrice)
+    throw new Error('Take Profit for LONG position must be above entry price');
+  if (this.takeProfit != null && this.positionType === 'SHORT' && this.takeProfit >= this.entryPrice)
+    throw new Error('Take Profit for SHORT position must be below entry price');
+};
+
+// ─── Method: check if SL or Target is hit ───────────────────────────────
+positionSchema.methods.checkSLTP = function(markPrice) {
+  const sl     = this.stopLoss;
+  const target = this.takeProfit || this.target;
+  const isLong = this.positionType === 'LONG';
+
+  if (isLong) {
+    if (sl     && markPrice <= sl)     return 'sl_hit';
+    if (target && markPrice >= target) return 'target_hit';
   } else {
-    const grossPnL = this.investmentValue - this.currentValue;
-    this.realizedPnL = grossPnL - this.totalBrokerage;
+    if (sl     && markPrice >= sl)     return 'sl_hit';
+    if (target && markPrice <= target) return 'target_hit';
   }
-  
-  this.pnl = this.realizedPnL;
-  
+  return null;
+};
+
+// ─── Method: close position ──────────────────────────────────────────────
+positionSchema.methods.close = function(exitPrice, exitBrokerage = 0, reason = 'MANUAL') {
+  exitPrice = parseFloat(exitPrice);
+
+  this.exitPrice      = exitPrice;
+  this.exitBrokerage  = exitBrokerage;
+  this.totalBrokerage = (this.entryBrokerage || 0) + exitBrokerage;
+  this.exitDate       = new Date();
+  this.exitedAt       = new Date();
+  this.isActive       = false;
+  this.isOpen         = false;
+  this.closeReason    = reason;
+
+  const exitValue = exitPrice * this.quantity;
+
+  if (this.positionType === 'LONG') {
+    const gross       = exitValue - this.investmentValue;
+    this.realizedPnL  = gross - this.totalBrokerage;
+  } else {
+    const gross       = this.investmentValue - exitValue;
+    this.realizedPnL  = gross - this.totalBrokerage;
+  }
+
+  this.pnl         = this.realizedPnL;
+  this.finalPnL    = this.realizedPnL;
+  this.currentValue = exitValue;
+
   if (this.investmentValue > 0) {
     this.pnlPercentage = (this.realizedPnL / this.investmentValue) * 100;
   }
+
+  // Mark triggers
+  if (reason === 'STOP_LOSS')  this.stopLossTriggered   = true;
+  if (reason === 'TARGET')     this.takeProfitTriggered = true;
 };
+
+// ─── Virtuals ─────────────────────────────────────────────────────────────
+positionSchema.virtual('slDistance').get(function() {
+  if (!this.stopLoss || !this.currentPrice) return null;
+  return Math.abs(this.currentPrice - this.stopLoss);
+});
+
+positionSchema.virtual('tpDistance').get(function() {
+  const tp = this.takeProfit || this.target;
+  if (!tp || !this.currentPrice) return null;
+  return Math.abs(this.currentPrice - tp);
+});
+
+positionSchema.virtual('hasSL').get(function() {
+  return !!(this.stopLoss && this.stopLoss > 0);
+});
+
+positionSchema.virtual('hasTP').get(function() {
+  return !!((this.takeProfit || this.target) > 0);
+});
+
+positionSchema.set('toJSON',   { virtuals: true });
+positionSchema.set('toObject', { virtuals: true });
 
 module.exports = mongoose.model('Position', positionSchema);
