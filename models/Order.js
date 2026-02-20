@@ -462,16 +462,16 @@ orderSchema.methods.calculateMargin = function(user) {
     this.marginRequired = contractValue * (marginPercent / 100);
     
   } else if (this.contractType === 'FUTURES') {
-    this.marginPercent = 20;
-    this.marginRequired = contractValue * 0.20;
+    this.marginPercent = marginPercent;
+    this.marginRequired = contractValue * (marginPercent / 100);
     
   } else if (this.contractType === 'CE' || this.contractType === 'PE') {
     if (this.orderType === 'BUY') {
       this.marginPercent = 100;
       this.marginRequired = contractValue;
     } else {
-      this.marginPercent = 30;
-      this.marginRequired = contractValue * 0.30;
+      this.marginPercent = marginPercent;
+      this.marginRequired = contractValue *(marginPercent / 100);
     }
   }
   
