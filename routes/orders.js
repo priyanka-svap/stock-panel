@@ -221,6 +221,120 @@ router.post('/place', auth, async (req, res) => {
 });
 
 // ─────────────────────────────────────────
+// PATCH /api/orders/:orderId/edit
+// Only PENDING orders can be edited
+// Can edit: quantity, price, limitPrice, stopLoss, takeProfit
+// ─────────────────────────────────────────
+router.patch('/:orderId/edit', auth, async (req, res) => {
+  try {
+    const { quantity, price, limitPrice, stopLoss, takeProfit, notes } = req.body;
+
+    // Find order
+    const order = await Order.findOne({ _id: req.params.orderId, userId: req.user.userId });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    
+    // Only PENDING orders can be edited
+    if (order.status !== 'PENDING') {
+      return res.status(400).json({ 
+        success: false, 
+        message: `Cannot edit ${order.status} order. Only PENDING orders can be edited.` 
+      });
+    }
+
+    const user = await User.findById(req.user.userId);
+    const oldMargin = order.marginUsed;
+    const oldBrokerage = order.brokerage;
+
+    // Update fields if provided
+    if (quantity) {
+      if (+quantity <= 0) return res.status(400).json({ success: false, message: 'Quantity must be > 0' });
+      order.quantity = +quantity;
+    }
+    if (price) {
+      if (+price <= 0) return res.status(400).json({ success: false, message: 'Price must be > 0' });
+      order.price = +price;
+    }
+    if (limitPrice !== undefined) order.limitPrice = limitPrice ? +limitPrice : undefined;
+    if (notes !== undefined) order.notes = notes;
+
+    // Validate SL/TP if provided
+    const newPrice = price || order.price;
+    if (stopLoss !== undefined) {
+      if (stopLoss) {
+        if (order.orderType === 'BUY' && +stopLoss >= +newPrice) {
+          return res.status(400).json({ success: false, message: 'Stop-Loss (BUY) must be BELOW entry price' });
+        }
+        if (order.orderType === 'SELL' && +stopLoss <= +newPrice) {
+          return res.status(400).json({ success: false, message: 'Stop-Loss (SELL) must be ABOVE entry price' });
+        }
+      }
+      order.stopLoss = stopLoss ? +stopLoss : undefined;
+    }
+    if (takeProfit !== undefined) {
+      if (takeProfit) {
+        if (order.orderType === 'BUY' && +takeProfit <= +newPrice) {
+          return res.status(400).json({ success: false, message: 'Take-Profit (BUY) must be ABOVE entry price' });
+        }
+        if (order.orderType === 'SELL' && +takeProfit >= +newPrice) {
+          return res.status(400).json({ success: false, message: 'Take-Profit (SELL) must be BELOW entry price' });
+        }
+      }
+      order.takeProfit = takeProfit ? +takeProfit : undefined;
+    }
+
+    // Recalculate totalAmount
+    order.totalAmount = order.quantity * order.price;
+
+    // Recalculate margin & charges
+    order.calculateMargin(user);
+    order.calculateCharges(user);
+    if (order.stopLoss || order.takeProfit) {
+      try {
+        order.calculateSLTP();
+      } catch (e) {
+        return res.status(400).json({ success: false, message: 'SL/TP calculation error: ' + e.message });
+      }
+    }
+
+    // Adjust user margin if changed (only for BUY orders)
+    if (order.orderType === 'BUY') {
+      const marginDiff = order.marginUsed - oldMargin;
+      const brokerageDiff = order.brokerage - oldBrokerage;
+
+      if (marginDiff > 0) {
+        // Need MORE margin
+        if (!user.hasEnoughMargin(order.netAmount)) {
+          return res.status(400).json({
+            success: false,
+            message: `Insufficient margin. Required: ₹${order.netAmount}, Available: ₹${user.availableMargin}`
+          });
+        }
+        user.useMargin(marginDiff);
+        user.availableBalance -= brokerageDiff;
+      } else if (marginDiff < 0) {
+        // Release EXTRA margin
+        user.releaseMargin(Math.abs(marginDiff));
+        user.availableBalance -= brokerageDiff; // might be negative (refund)
+      }
+      await user.save();
+      syncSingleUserToFirebase(user._id.toString()).catch(console.error);
+    }
+
+    order.updatedAt = new Date();
+    await order.save();
+
+    res.json({ 
+      success: true, 
+      message: 'Order updated successfully', 
+      data: order 
+    });
+
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// ─────────────────────────────────────────
 // PATCH /api/orders/:id/cancel
 // ─────────────────────────────────────────
 router.patch('/:orderId/cancel', auth, async (req, res) => {
