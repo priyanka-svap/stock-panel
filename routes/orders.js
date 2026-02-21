@@ -446,6 +446,7 @@ async function _executeOrder(order, user, execPrice) {
       pos.marginUsed += order.marginUsed;
       pos.entryBrokerage += order.brokerage;
       pos.totalBrokerage = pos.entryBrokerage + pos.exitBrokerage;
+      pos.isActive=true;
       // Update SL/TP if provided in new order
       if (order.stopLoss) pos.stopLoss = order.stopLoss;
       if (order.takeProfit) pos.takeProfit = order.takeProfit;
