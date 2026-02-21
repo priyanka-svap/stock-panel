@@ -135,6 +135,7 @@ async function autoClosePosition(pos, markPrice, reason) {
     }
 
     console.log(`✅ [SLTP] Closed: ${pos.symbol} | ${reasonLabel} | PnL: ₹${pnl.toFixed(2)}`);
+    autoCloseInProgress.delete(posId); // ✅ FIX: success pe bhi delete karo
     return true;
 
   } catch (e) {
@@ -167,7 +168,8 @@ async function autoClosePosition(pos, markPrice, reason) {
 // ─────────────────────────────────────────────────────────────────────────────
 async function updateAllUsersPnL() {
   try {
-    const positions = await Position.find({ isActive: true }).lean();
+    // ✅ FIX: Sirf ACTIVE positions fetch karo
+    const positions = await Position.find({ isActive: true, isOpen: true }).lean();
     if (!positions.length) return;
 
     // Batch-fetch all stock prices
@@ -339,13 +341,11 @@ async function updateAllUsersPnL() {
         const uid   = pos.userId.toString();
         const posId = pos._id.toString();
 
-        // Mark as closed in Firebase
+        // ✅ FIX: Closed position ko Firebase se REMOVE karo
+        // Firebase Realtime DB mein null set = node delete ho jata hai
+        // Isse closed positions frontend par nahi dikhenge
         await _fbPatch({
-          [`users/${uid}/positions/${posId}/isActive`]:    false,
-          [`users/${uid}/positions/${posId}/sltpStatus`]:  reason,
-          [`users/${uid}/positions/${posId}/sltpHit`]:     reason,
-          [`users/${uid}/positions/${posId}/closeReason`]: reason === 'sl_hit' ? 'STOP_LOSS' : 'takeProfit',
-          [`users/${uid}/positions/${posId}/closedAt`]:    Date.now(),
+          [`users/${uid}/positions/${posId}`]: null,
         });
 
         // Full user sync to refresh balance/PnL in Firebase
