@@ -309,9 +309,22 @@ async function updateAllUsersPnL() {
       }
 
       // User-level P&L summary (sirf agar positions hain)
-      const user = await User.findById(uid, 'totalPnL todayPnL availableBalance usedMargin marginMultiplier').lean();
+      const user = await User.findById(uid, 'totalPnL todayPnL availableBalance usedMargin marginMultiplier marginEnabled marginAllowed').lean();
       if (user) {
-        const totalMargin = (user.availableBalance || 0) * (user.marginMultiplier || 1);
+        // ✅ Same formula as User model virtual
+        const availBal   = user.availableBalance || 0;
+        const usedMgn    = user.usedMargin || 0;
+        let totalMargin;
+        if (!user.marginEnabled) {
+          totalMargin = availBal;
+        } else if ((user.marginMultiplier || 1) > 1) {
+          totalMargin = availBal * (user.marginMultiplier || 1);
+        } else {
+          totalMargin = availBal + (user.marginAllowed || 0);
+        }
+        const remainingMargin = Math.max(0, totalMargin - usedMgn);
+        const marginUtilPct   = totalMargin > 0 ? parseFloat((usedMgn / totalMargin * 100).toFixed(2)) : 0;
+
         Object.assign(fbUpdates, {
           [`users/${uid}/pnl/unrealizedPnL`]:   parseFloat(totalUnrealized.toFixed(2)),
           [`users/${uid}/pnl/totalInvestment`]: parseFloat(totalInvestment.toFixed(2)),
@@ -320,9 +333,12 @@ async function updateAllUsersPnL() {
           [`users/${uid}/pnl/todayPnL`]:        parseFloat((user.todayPnL  || 0).toFixed(2)),
           [`users/${uid}/pnl/lastUpdated`]:     Date.now(),
 
-          [`users/${uid}/balance/availableBalance`]: parseFloat((user.availableBalance || 0).toFixed(2)),
-          [`users/${uid}/balance/usedMargin`]:       parseFloat((user.usedMargin       || 0).toFixed(2)),
-          [`users/${uid}/balance/availableMargin`]:  parseFloat(Math.max(0, totalMargin - (user.usedMargin || 0)).toFixed(2)),
+          [`users/${uid}/balance/availableBalance`]: parseFloat(availBal.toFixed(2)),
+          [`users/${uid}/balance/usedMargin`]:       parseFloat(usedMgn.toFixed(2)),
+          [`users/${uid}/balance/remainingMargin`]:  parseFloat(remainingMargin.toFixed(2)),  // ✅
+          [`users/${uid}/balance/availableMargin`]:  parseFloat(remainingMargin.toFixed(2)),  // alias
+          [`users/${uid}/balance/totalMargin`]:      parseFloat(totalMargin.toFixed(2)),
+          [`users/${uid}/balance/marginUtilization`]: marginUtilPct,
           [`users/${uid}/balance/lastUpdated`]:      Date.now(),
         });
       }
