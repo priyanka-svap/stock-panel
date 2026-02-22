@@ -157,10 +157,13 @@ async function autoClosePosition(pos, markPrice, reason) {
     const user = await User.findById(pos.userId);
     if (user) {
       const marginToRelease = pos.marginUsed || pos.usedMargin || 0;
-      user.usedMargin       = Math.max(0, (user.usedMargin || 0) - marginToRelease);
-      user.totalPnL         = (user.totalPnL || 0) + pnl;
-      user.todayPnL         = (user.todayPnL || 0) + pnl;
-      user.availableBalance = (user.availableBalance || 0) + exitValue - brokerage;
+      // ✅ releaseMargin: usedMargin kam karo + availableBalance wapas do
+      user.releaseMargin(marginToRelease);
+      // PnL diff aur brokerage adjust karo
+      user.availableBalance += pnl;      // profit add / loss deduct
+      user.availableBalance -= brokerage; // exit brokerage deduct
+      user.totalPnL          = (user.totalPnL || 0) + pnl;
+      user.todayPnL          = (user.todayPnL || 0) + pnl;
       await user.save();
     }
 

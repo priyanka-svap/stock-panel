@@ -498,31 +498,37 @@ async function _executeOrder(order, user, execPrice) {
     const exitBrok = order.brokerage;
 
     if (pos.quantity <= order.quantity) {
-      // Full close
+      // ── Full close ──
       pos.close(execPrice, exitBrok);
       await pos.save();
+      // ✅ releaseMargin: margin unblock + availableBalance wapas do
       user.releaseMargin(pos.marginUsed);
+      user.availableBalance += pos.realizedPnL; // profit add / loss deduct
+      user.availableBalance -= exitBrok;        // exit brokerage deduct
       user.totalPnL += pos.realizedPnL;
       user.todayPnL += pos.realizedPnL;
     } else {
-      // Partial close
-      const closedQty = order.quantity;
-      const proportion = closedQty / pos.quantity;
+      // ── Partial close ──
+      const closedQty     = order.quantity;
+      const proportion    = closedQty / pos.quantity;
       const partialInvest = pos.investmentValue * proportion;
-      const partialExit = closedQty * execPrice;
-      const partialPnL = partialExit - partialInvest - exitBrok;
+      const partialExit   = closedQty * execPrice;
+      const partialPnL    = partialExit - partialInvest - exitBrok;
       const marginRelease = pos.marginUsed * proportion;
 
-      pos.quantity -= closedQty;
+      pos.quantity        -= closedQty;
       pos.investmentValue -= partialInvest;
-      pos.currentValue = pos.quantity * execPrice;
-      pos.marginUsed -= marginRelease;
-      pos.realizedPnL += partialPnL;
-      pos.exitBrokerage += exitBrok;
-      pos.totalBrokerage = pos.entryBrokerage + pos.exitBrokerage;
+      pos.currentValue     = pos.quantity * execPrice;
+      pos.marginUsed      -= marginRelease;
+      pos.realizedPnL     += partialPnL;
+      pos.exitBrokerage   += exitBrok;
+      pos.totalBrokerage   = pos.entryBrokerage + pos.exitBrokerage;
       await pos.save();
 
+      // ✅ proportion ke hisaab se release
       user.releaseMargin(marginRelease);
+      user.availableBalance += partialPnL; // partial PnL adjust
+      user.availableBalance -= exitBrok;   // exit brokerage deduct
       user.totalPnL += partialPnL;
       user.todayPnL += partialPnL;
     }

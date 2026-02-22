@@ -183,17 +183,19 @@ async function executePendingOrder(order, user, execPrice) {
       }
       await pos.save();
 
-      // Release margin
+      // ✅ releaseMargin: usedMargin kam karo + availableBalance wapas do (margin unblock)
       const marginToRelease = pos.marginUsed || 0;
-      user.usedMargin       = Math.max(0, (user.usedMargin || 0) - marginToRelease);
-      user.totalPnL         = (user.totalPnL || 0) + realizedPnL;
-      user.todayPnL         = (user.todayPnL || 0) + realizedPnL;
-      user.availableBalance = (user.availableBalance || 0) + exitValue - exitBrok;
+      user.releaseMargin(marginToRelease);
+      // ab sirf PnL diff aur exit brokerage adjust karo
+      user.availableBalance += realizedPnL; // profit add / loss deduct
+      user.availableBalance -= exitBrok;    // exit brokerage deduct
+      user.totalPnL          = (user.totalPnL || 0) + realizedPnL;
+      user.todayPnL          = (user.todayPnL || 0) + realizedPnL;
 
     } else {
-      // Partial close
-      const closedQty   = order.quantity;
-      const proportion  = closedQty / pos.quantity;
+      // ── Partial close ──
+      const closedQty     = order.quantity;
+      const proportion    = closedQty / pos.quantity;
       const partialInvest = pos.investmentValue * proportion;
       const partialExit   = closedQty * execPrice;
       const partialPnL    = partialExit - partialInvest - exitBrok;
@@ -208,10 +210,12 @@ async function executePendingOrder(order, user, execPrice) {
       pos.totalBrokerage   = (pos.entryBrokerage || 0) + pos.exitBrokerage;
       await pos.save();
 
-      user.usedMargin       = Math.max(0, (user.usedMargin || 0) - marginRelease);
-      user.totalPnL         = (user.totalPnL || 0) + partialPnL;
-      user.todayPnL         = (user.todayPnL || 0) + partialPnL;
-      user.availableBalance = (user.availableBalance || 0) + partialExit - exitBrok;
+      // ✅ proportion ke hisaab se release
+      user.releaseMargin(marginRelease);
+      user.availableBalance += partialPnL; // partial PnL adjust
+      user.availableBalance -= exitBrok;   // exit brokerage deduct
+      user.totalPnL          = (user.totalPnL || 0) + partialPnL;
+      user.todayPnL          = (user.todayPnL || 0) + partialPnL;
     }
 
     user.totalBrokeragePaid = (user.totalBrokeragePaid || 0) + exitBrok;
@@ -289,8 +293,9 @@ async function monitorPendingOrders() {
             if (o.orderType === 'BUY' && o.marginUsed > 0) {
               const user = await User.findById(o.userId);
               if (user) {
-                user.usedMargin = Math.max(0, (user.usedMargin || 0) - (o.marginUsed || 0));
-                user.availableBalance += (o.brokerage || 0); // refund brokerage
+                // ✅ releaseMargin: wapas unblock karo
+                user.releaseMargin(o.marginUsed || 0);
+                user.availableBalance += (o.brokerage || 0); // brokerage refund
                 await user.save();
               }
             }

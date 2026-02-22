@@ -96,10 +96,13 @@ async function monitorSLTP() {
       position.close(exitPrice, exitBrok, closeReason);
       await position.save();
 
-      // Update user
+      // ✅ releaseMargin: usedMargin kam karo + availableBalance (margin) wapas do
       user.releaseMargin(pos.marginUsed);
-      user.totalPnL          += position.realizedPnL;
-      user.todayPnL          += position.realizedPnL;
+      // PnL aur exit brokerage availableBalance mein reflect karo
+      user.availableBalance   += position.realizedPnL; // profit add / loss deduct
+      user.availableBalance   -= exitBrok;              // exit brokerage deduct
+      user.totalPnL           += position.realizedPnL;
+      user.todayPnL           += position.realizedPnL;
       user.totalBrokeragePaid += exitBrok;
       await user.save();
 

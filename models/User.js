@@ -151,11 +151,17 @@ userSchema.methods.hasEnoughMargin = function(requiredAmount) {
 };
 
 userSchema.methods.useMargin = function(amount) {
+  // usedMargin track karo (for display)
   this.usedMargin += amount;
+  // ✅ availableBalance se bhi deduct karo (actual money block)
+  this.availableBalance = Math.max(0, this.availableBalance - amount);
 };
 
 userSchema.methods.releaseMargin = function(amount) {
+  // usedMargin kam karo
   this.usedMargin = Math.max(0, this.usedMargin - amount);
+  // ✅ availableBalance wapas add karo (money unblock)
+  this.availableBalance += amount;
 };
 
 userSchema.methods.addBrokerage = function(amount) {
