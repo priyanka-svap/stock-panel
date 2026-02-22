@@ -75,7 +75,7 @@ function calcLiquidationPrice(pos) {
 //   return parseFloat(Math.max(0, raw).toFixed(2));
  const entryPrice=pos.entryPrice;
    const qty=   pos.quantity;
-    const marginUsed=  pos.marginUsed;        // walletBalance = margin blocked for pos position
+    const  walletBalance=  pos.marginUsed;        // walletBalance = margin blocked for pos position
      const leverage= pos.marginMultiplier || 1;
     const positionType=  pos.positionType      
 if (qty <= 0) return 0;
@@ -87,7 +87,7 @@ if (qty <= 0) return 0;
   const liqCross = (notional - walletBalance) / denom;
   // Fallback: isolated-margin formula if cross result is illogical
   if (liqCross >= entryPrice) {
-    return Math.max(0.01, entryPrice * (1 - 1 / leverage + MAINTENANCE_MARGIN_RATES));
+    return Math.max(0.01, entryPrice * (1 - 1 / lev + MAINTENANCE_MARGIN_RATES));
   }
   return Math.max(0, liqCross);
  }
