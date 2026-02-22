@@ -85,10 +85,12 @@ if (qty <= 0) return 0;
   const denom = qty * (1 - MAINTENANCE_MARGIN_RATES);
   if (denom <= 0) return 0;
   const liqCross = (notional - walletBalance) / denom;
+  console.log(notional,walletBalance,lev,denom)
   // Fallback: isolated-margin formula if cross result is illogical
   if (liqCross >= entryPrice) {
     return Math.max(0.01, entryPrice * (1 - 1 / lev + MAINTENANCE_MARGIN_RATES));
   }
+
   return Math.max(0, liqCross);
  }
 
