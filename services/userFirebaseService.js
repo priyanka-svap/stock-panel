@@ -58,7 +58,7 @@ async function _fbPatch(updates) {
 // ─────────────────────────────────────────────────────────────────────────────
 function calcLiquidationPrice(pos) {
   console.log({pos})
-  const marginUsed = pos.marginMultiplier || pos.usedMargin || 0;
+  const marginMultiplier = pos.marginMultiplier || pos.usedMargin || 0;
   const qty        = pos.quantity   || 0;
   const entry      = pos.entryPrice || 0;
 
