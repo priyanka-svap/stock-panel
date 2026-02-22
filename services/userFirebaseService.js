@@ -57,7 +57,7 @@ async function _fbPatch(updates) {
 //    SHORT → 1000 + 200 = 1200  (price rises to 1200 → margin gone)
 // ─────────────────────────────────────────────────────────────────────────────
 const MAINTENANCE_MARGIN_RATES = 0.005;
-function calcLiquidationPrice(pos) {
+function calcLiquidationPrice(pos,bal) {
 //   console.log({pos})
 //   const marginMultiplier = pos.marginMultiplier || pos.usedMargin || 0;
 //   const qty        = pos.quantity   || 0;
@@ -75,7 +75,7 @@ function calcLiquidationPrice(pos) {
 //   return parseFloat(Math.max(0, raw).toFixed(2));
  const entryPrice=pos.entryPrice;
    const qty=   pos.quantity;
-    const  walletBalance=  pos.marginUsed;        // walletBalance = margin blocked for pos position
+    const  walletBalance=bal;        // walletBalance = margin blocked for pos position
      const leverage= pos.marginMultiplier || 1;
     const positionType=  pos.positionType      
 if (qty <= 0) return 0;
@@ -163,7 +163,7 @@ async function syncSingleUserToFirebase(userId) {
       totalInvestment    += investedVal;
 
       // ✅ Correct liquidation price
-      const liqPrice = calcLiquidationPrice(pos);
+      const liqPrice = calcLiquidationPrice(pos,user.availableBalance);
       let liqDist = null, liqPct = null, liqRisk = null;
       if (liqPrice !== null && markPrice > 0) {
         liqDist = parseFloat(Math.abs(markPrice - liqPrice).toFixed(2));
