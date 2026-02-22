@@ -58,13 +58,13 @@ async function _fbPatch(updates) {
 // ─────────────────────────────────────────────────────────────────────────────
 function calcLiquidationPrice(pos) {
   console.log({pos})
-  const marginUsed = pos.marginUsed || pos.usedMargin || 0;
+  const marginUsed = pos.marginMultiplier || pos.usedMargin || 0;
   const qty        = pos.quantity   || 0;
   const entry      = pos.entryPrice || 0;
 
-  if (!marginUsed || !qty || !entry) return null;
+  if (!marginMultiplier || !qty || !entry) return null;
 
-  const marginPerUnit = marginUsed / qty;
+  const marginPerUnit = marginMultiplier / qty;
   const isLong        = pos.positionType === 'LONG';
 
   const raw = isLong
