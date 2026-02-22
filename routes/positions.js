@@ -498,24 +498,39 @@ router.post('/open', auth, async (req, res) => {
 
     if (!stock) return res.status(404).json({ success: false, message: 'Stock not found' });
 
-    const requiredAmount = +quantity * +entryPrice;
-    if (user.availableBalance < requiredAmount)
-      return res.status(400).json({ success: false, message: 'Insufficient balance' });
+    // ✅ Leverage-aware margin calculation
+    // marginUsed = notional / leverage (same logic as Order.calculateMargin)
+    const notional       = +quantity * +entryPrice;
+    const leverage       = user.marginEnabled && user.marginMultiplier > 1
+      ? user.marginMultiplier : 1;
+    const marginUsed     = parseFloat((notional / leverage).toFixed(2));
+    const requiredMargin = marginUsed; // only this much is blocked from wallet
+
+    if (!user.hasEnoughMargin(requiredMargin))
+      return res.status(400).json({
+        success: false,
+        message: 'Insufficient margin',
+        required: requiredMargin,
+        available: user.availableMargin
+      });
 
     const pos = new Position({
-      userId:          req.user.userId,
-      symbol:          symbol.toUpperCase(),
-      companyName:     stock.companyName,
+      userId:           req.user.userId,
+      symbol:           symbol.toUpperCase(),
+      companyName:      stock.companyName,
       positionType,
-      quantity:        +quantity,
-      entryPrice:      +entryPrice,
-      currentPrice:    stock.currentPrice || +entryPrice,
-      investmentValue: +quantity * +entryPrice,
-      currentValue:    +quantity * (stock.currentPrice || +entryPrice),
-      marginUsed:      requiredAmount,
-      isActive:        true,
-      isOpen:          true,
-      entryDate:       new Date()
+      quantity:         +quantity,
+      entryPrice:       +entryPrice,
+      currentPrice:     stock.currentPrice || +entryPrice,
+      investmentValue:  notional,
+      currentValue:     +quantity * (stock.currentPrice || +entryPrice),
+      // ✅ marginUsed = notional/leverage so liquidationPrice calculates correctly
+      marginUsed:       marginUsed,
+      // ✅ marginMultiplier saved on position (needed by calcLiquidationPrice)
+      marginMultiplier: leverage,
+      isActive:         true,
+      isOpen:           true,
+      entryDate:        new Date()
     });
 
     // Set SL/TP via model method (validates direction)
@@ -527,10 +542,10 @@ router.post('/open', auth, async (req, res) => {
       }
     }
 
-    await pos.save();
+    await pos.save();  // pre-save hook calculates liquidationPrice correctly
 
-    user.availableBalance -= requiredAmount;
-    user.usedMargin       += requiredAmount;
+    // ✅ useMargin: both usedMargin++ and availableBalance-- 
+    user.useMargin(marginUsed);
     await user.save();
 
     syncSingleUserToFirebase(user._id.toString()).catch(console.error);
@@ -571,15 +586,18 @@ router.post('/close/:id', auth, async (req, res) => {
       ? user.calculateBrokerage(pos.quantity * price, pos.quantity)
       : 0;
 
+    const marginToRelease = pos.marginUsed || 0;  // save before close()
     pos.close(price, exitBrok, 'MANUAL');
-    await pos.save();
+    await pos.save();  // pre-save hook runs → pnl, pnlPercentage updated
 
-    user.releaseMargin(pos.marginUsed);
-    user.totalPnL         = (user.totalPnL || 0) + pos.realizedPnL;
-    user.todayPnL         = (user.todayPnL || 0) + pos.realizedPnL;
-    user.totalBrokeragePaid = (user.totalBrokeragePaid || 0) + exitBrok;
-    // Return exit value to balance
-    user.availableBalance = (user.availableBalance || 0) + (price * pos.quantity) - exitBrok;
+    // ✅ releaseMargin: usedMargin-- AND availableBalance++ (margin unblock)
+    user.releaseMargin(marginToRelease);
+    // ✅ PnL reflect in balance (profit add, loss deduct)
+    user.availableBalance   += pos.realizedPnL;
+    user.availableBalance   -= exitBrok;
+    user.totalPnL            = (user.totalPnL || 0) + pos.realizedPnL;
+    user.todayPnL            = (user.todayPnL || 0) + pos.realizedPnL;
+    user.totalBrokeragePaid  = (user.totalBrokeragePaid || 0) + exitBrok;
     await user.save();
 
     syncSingleUserToFirebase(user._id.toString()).catch(console.error);

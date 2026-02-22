@@ -98,12 +98,13 @@ async function autoClosePosition(pos, markPrice, reason) {
       : reason === 'takeProfit_hit' ? 'TARGET' : 'LIQUIDATION';
 
     // 1. Mark position closed in MongoDB
-    await Position.findByIdAndUpdate(posId, {
-      isActive: false, isOpen: false,
-      exitPrice: markPrice, exitedAt: new Date(), exitDate: new Date(),
-      closeReason, finalPnL: parseFloat(pnl.toFixed(2)),
-      realizedPnL: parseFloat(pnl.toFixed(2)),
-    });
+    // ✅ Use .close() method + .save() instead of findByIdAndUpdate
+    //    findByIdAndUpdate SKIPS pre-save hook → liquidationPrice/pnl not recalculated
+    const posDoc = await Position.findById(posId);
+    if (posDoc) {
+      posDoc.close(markPrice, brokerage, closeReason);
+      await posDoc.save();  // pre-save hook runs → liquidationPrice, pnlPercentage updated
+    }
 
     // 2. Create exit order record
     await Order.create({
@@ -205,9 +206,14 @@ async function updateAllUsersPnL() {
         if (sltpHit && !autoCloseInProgress.has(posId)) {
           toAutoClose.push({ pos, markPrice, reason: sltpHit });
         }
-
+  // ✅ User balance → Firebase (correct formula via calcBalanceFields)
+      const userDoc = await User.findById(uid,
+        'totalPnL todayPnL availableBalance usedMargin marginMultiplier marginEnabled marginAllowed'
+      ).lean();
+ if (userDoc) {
+        const bal = calcBalanceFields(userDoc);
         // ✅ Correct liquidation price (same formula as userFirebaseService)
-        const liquidationPrice = calcLiquidationPrice(pos);
+        const liquidationPrice = calcLiquidationPrice(pos,bal.availableBalance);
         let liquidationDist = null, liquidationPct = null, liquidationRisk = null;
 
         if (liquidationPrice !== null && markPrice > 0) {
@@ -245,13 +251,8 @@ async function updateAllUsersPnL() {
         });
       }
 
-      // ✅ User balance → Firebase (correct formula via calcBalanceFields)
-      const userDoc = await User.findById(uid,
-        'totalPnL todayPnL availableBalance usedMargin marginMultiplier marginEnabled marginAllowed'
-      ).lean();
-
-      if (userDoc) {
-        const bal = calcBalanceFields(userDoc);  // ✅ consistent formula
+    
+       // ✅ consistent formula
         Object.assign(fbUpdates, {
           [`users/${uid}/pnl/unrealizedPnL`]:   parseFloat(totalUnrealized.toFixed(2)),
           [`users/${uid}/pnl/totalInvestment`]: parseFloat(totalInvestment.toFixed(2)),
