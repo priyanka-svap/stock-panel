@@ -57,6 +57,7 @@ async function _fbPatch(updates) {
 //    SHORT → 1000 + 200 = 1200  (price rises to 1200 → margin gone)
 // ─────────────────────────────────────────────────────────────────────────────
 function calcLiquidationPrice(pos) {
+  console.log({pos})
   const marginUsed = pos.marginUsed || pos.usedMargin || 0;
   const qty        = pos.quantity   || 0;
   const entry      = pos.entryPrice || 0;
@@ -69,7 +70,7 @@ function calcLiquidationPrice(pos) {
   const raw = isLong
     ? entry - marginPerUnit
     : entry + marginPerUnit;
-
+console.log(raw)
   return parseFloat(Math.max(0, raw).toFixed(2));
 }
 
