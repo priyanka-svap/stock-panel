@@ -56,23 +56,41 @@ async function _fbPatch(updates) {
 //    LONG  → 1000 - 200 = 800   (price falls to 800 → margin gone)
 //    SHORT → 1000 + 200 = 1200  (price rises to 1200 → margin gone)
 // ─────────────────────────────────────────────────────────────────────────────
+const MAINTENANCE_MARGIN_RATES = 0.005;
 function calcLiquidationPrice(pos) {
-  console.log({pos})
-  const marginMultiplier = pos.marginMultiplier || pos.usedMargin || 0;
-  const qty        = pos.quantity   || 0;
-  const entry      = pos.entryPrice || 0;
+//   console.log({pos})
+//   const marginMultiplier = pos.marginMultiplier || pos.usedMargin || 0;
+//   const qty        = pos.quantity   || 0;
+//   const entry      = pos.entryPrice || 0;
 
-  if (!marginMultiplier || !qty || !entry) return null;
+//   if (!marginMultiplier || !qty || !entry) return null;
 
-  const marginPerUnit = marginMultiplier / qty;
-  const isLong        = pos.positionType === 'LONG';
+//   const marginPerUnit = marginMultiplier / qty;
+//   const isLong        = pos.positionType === 'LONG';
 
-  const raw = isLong
-    ? entry - marginPerUnit
-    : entry + marginPerUnit;
-console.log(raw)
-  return parseFloat(Math.max(0, raw).toFixed(2));
-}
+//   const raw = isLong
+//     ? entry - marginPerUnit
+//     : entry + marginPerUnit;
+// console.log(raw)
+//   return parseFloat(Math.max(0, raw).toFixed(2));
+ const entryPrice=pos.entryPrice;
+   const qty=   pos.quantity;
+    const marginUsed=  pos.marginUsed;        // walletBalance = margin blocked for pos position
+     const leverage= pos.marginMultiplier || 1;
+    const positionType=  pos.positionType      
+if (qty <= 0) return 0;
+  const lev = Math.max(1, leverage || 1);
+  const notional = entryPrice * qty;
+  if (walletBalance >= notional) return 0; // fully funded, no liq risk
+  const denom = qty * (1 - MAINTENANCE_MARGIN_RATES);
+  if (denom <= 0) return 0;
+  const liqCross = (notional - walletBalance) / denom;
+  // Fallback: isolated-margin formula if cross result is illogical
+  if (liqCross >= entryPrice) {
+    return Math.max(0.01, entryPrice * (1 - 1 / leverage + MAINTENANCE_MARGIN_RATES));
+  }
+  return Math.max(0, liqCross);
+ }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ✅ Balance calculation — mirrors User model virtuals exactly
