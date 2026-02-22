@@ -75,7 +75,7 @@ function calcLiquidationPrice(pos,bal) {
 //   return parseFloat(Math.max(0, raw).toFixed(2));
  const entryPrice=pos.entryPrice;
    const qty=   pos.quantity;
-    const  walletBalance=bal;        // walletBalance = margin blocked for pos position
+    const  walletBalance=bal-pos.usedMargin;        // walletBalance = margin blocked for pos position
      const leverage= pos.marginMultiplier || 1;
     const positionType=  pos.positionType      
 if (qty <= 0) return 0;
