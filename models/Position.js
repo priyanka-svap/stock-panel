@@ -1,6 +1,6 @@
-// models/Position.js — Fixed: added stopLoss, takeProfit + all fields orders.js needs
-
+// models/Position.js
 const mongoose = require('mongoose');
+const { getLiquidationPrice, MAINTENANCE_MARGIN_RATE } = require('../utils/marginCalculator');
 
 const positionSchema = new mongoose.Schema({
   userId: {
@@ -196,16 +196,16 @@ positionSchema.pre('save', function(next) {
   if (this.isModified('isActive')) this.isOpen = this.isActive;
   if (this.isModified('isOpen'))   this.isActive = this.isOpen;
 
-  // ── Liquidation price (recalculate when margin or entry changes) ─────────
+  // ── Liquidation price (cross-margin formula from marginCalculator) ─────────
   if (this.marginUsed > 0 && this.quantity > 0 && this.entryPrice > 0) {
-    const marginPerUnit = this.marginUsed / this.quantity;
-    if (this.positionType === 'LONG') {
-      // LONG: price falls to wipe margin
-      this.liquidationPrice = parseFloat((this.entryPrice - marginPerUnit).toFixed(2));
-    } else {
-      // SHORT: price rises to wipe margin
-      this.liquidationPrice = parseFloat((this.entryPrice + marginPerUnit).toFixed(2));
-    }
+    const liq = getLiquidationPrice(
+      this.entryPrice,
+      this.quantity,
+      this.marginUsed,          // walletBalance = margin blocked for this position
+      this.marginMultiplier || 1,
+      this.positionType         // 'LONG' or 'SHORT'
+    );
+    this.liquidationPrice = liq > 0 ? parseFloat(liq.toFixed(2)) : null;
   }
 
   // Recalculate P&L if price or qty changed
@@ -255,28 +255,19 @@ positionSchema.methods.updatePrice = function(newPrice) {
   }
 };
 
-// ─── Method: calculate liquidation price ─────────────────────────────────
-// Liquidation = price at which total margin is exhausted
-// LONG:  liqPrice = entryPrice - (marginUsed / quantity)
-// SHORT: liqPrice = entryPrice + (marginUsed / quantity)
-// With maintenance margin buffer (default 10%): broker calls before full exhaustion
-positionSchema.methods.calculateLiquidationPrice = function(maintenanceMarginPct = 0.10) {
+// ─── Method: calculate liquidation price (cross-margin formula) ──────────
+// Uses getLiquidationPrice from utils/marginCalculator.js
+// walletBalance = this.marginUsed (margin blocked for this specific position)
+positionSchema.methods.calculateLiquidationPrice = function() {
   if (!this.marginUsed || !this.quantity || !this.entryPrice) return null;
-
-  const marginPerUnit     = this.marginUsed / this.quantity;
-  const maintenanceBuffer = this.entryPrice * maintenanceMarginPct;
-
-  let liqPrice;
-  if (this.positionType === 'LONG') {
-    // Price needs to fall by marginPerUnit to wipe out margin
-    // Subtract maintenance buffer so margin call triggers before full liquidation
-    liqPrice = this.entryPrice - marginPerUnit + maintenanceBuffer;
-  } else {
-    // Price needs to rise by marginPerUnit to wipe out margin
-    liqPrice = this.entryPrice + marginPerUnit - maintenanceBuffer;
-  }
-
-  return parseFloat(Math.max(0, liqPrice).toFixed(2));
+  const liq = getLiquidationPrice(
+    this.entryPrice,
+    this.quantity,
+    this.marginUsed,
+    this.marginMultiplier || 1,
+    this.positionType
+  );
+  return liq > 0 ? parseFloat(liq.toFixed(2)) : null;
 };
 
 // ─── Method: set / update SL and Target ─────────────────────────────────

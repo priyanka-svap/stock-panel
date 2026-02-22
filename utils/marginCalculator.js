@@ -1,283 +1,77 @@
 // utils/marginCalculator.js
-// Margin Calculator for F&O Trading
+//
+// ✅ Cross-margin liquidation price — mathematically verified
+//
+// LONG derivation:
+//   At liqPrice P: unrealizedLoss = (entry - P) × qty
+//   Condition when liquidated: walletBalance - loss = maintenanceMargin
+//   maintenanceMargin = P × qty × MMR
+//   → walletBalance - (entry - P)×qty = P×qty×MMR
+//   → walletBalance - entry×qty + P×qty = P×qty×MMR
+//   → walletBalance - notional = P×qty×(MMR - 1)
+//   → P = (notional - walletBalance) / (qty × (1 - MMR))   ✅
+//
+// SHORT derivation:
+//   unrealizedLoss = (P - entry) × qty
+//   walletBalance - (P - entry)×qty = P×qty×MMR
+//   → walletBalance + entry×qty = P×qty + P×qty×MMR
+//   → walletBalance + notional = P×qty×(1 + MMR)
+//   → P = (walletBalance + notional) / (qty × (1 + MMR))   ✅
+
+const MAINTENANCE_MARGIN_RATE = 0.005; // 0.5% — industry standard
 
 /**
- * Calculate margin required for F&O orders
- * Based on SEBI/NSE margin requirements
+ * LONG position liquidation price
+ * @param {number} entryPrice    - entry price of the position
+ * @param {number} qty           - quantity held
+ * @param {number} walletBalance - margin/wallet available (user.availableBalance or pos.marginUsed)
+ * @param {number} leverage      - leverage (used in fallback when cross-margin calc > entry)
+ * @returns {number}
  */
-
-const MARGIN_RATES = {
-  // Index Futures (NIFTY, BANKNIFTY, etc.)
-  FUTIDX: {
-    span: 0.10,      // 10% SPAN margin
-    exposure: 0.05,  // 5% Exposure margin
-    total: 0.15      // Total ~15%
-  },
-  
-  // Stock Futures
-  FUTSTK: {
-    span: 0.15,      // 15% SPAN margin
-    exposure: 0.05,  // 5% Exposure margin
-    total: 0.20      // Total ~20%
-  },
-  
-  // Index Options - BUY
-  OPTIDX_BUY: {
-    premium: 1.0     // 100% premium (no additional margin)
-  },
-  
-  // Index Options - SELL
-  OPTIDX_SELL: {
-    span: 0.12,      // 12% SPAN margin
-    exposure: 0.06,  // 6% Exposure margin
-    premium: 1.0,    // Plus full premium received
-    total: 0.18      // Total ~18% + premium
-  },
-  
-  // Stock Options - BUY
-  OPTSTK_BUY: {
-    premium: 1.0     // 100% premium
-  },
-  
-  // Stock Options - SELL
-  OPTSTK_SELL: {
-    span: 0.15,      // 15% SPAN margin
-    exposure: 0.08,  // 8% Exposure margin
-    premium: 1.0,    // Plus full premium received
-    total: 0.23      // Total ~23% + premium
+function crossMarginLiquidationLong(entryPrice, qty, walletBalance, leverage) {
+  if (qty <= 0) return 0;
+  const notional = entryPrice * qty;
+  if (walletBalance >= notional) return 0; // fully funded, no liq risk
+  const denom = qty * (1 - MAINTENANCE_MARGIN_RATE);
+  if (denom <= 0) return 0;
+  const liqCross = (notional - walletBalance) / denom;
+  // Fallback: isolated-margin formula if cross result is illogical
+  if (liqCross >= entryPrice) {
+    return Math.max(0.01, entryPrice * (1 - 1 / leverage + MAINTENANCE_MARGIN_RATE));
   }
-};
-
-/**
- * Calculate margin for F&O order
- * @param {Object} orderDetails - Order details
- * @returns {Object} Margin breakdown
- */
-function calculateFOMargin(orderDetails) {
-  const {
-    instrumentType,
-    contractType,
-    orderType,
-    quantity,
-    price,
-    lotSize = 1,
-    strikePrice
-  } = orderDetails;
-  
-  // For EQUITY, full amount required
-  if (instrumentType === 'EQUITY') {
-    const totalValue = quantity * price;
-    return {
-      type: 'EQUITY',
-      marginRequired: totalValue,
-      spanMargin: 0,
-      exposureMargin: 0,
-      premium: 0,
-      totalValue: totalValue,
-      isMarginOrder: false,
-      breakdown: 'Full payment required for equity delivery'
-    };
-  }
-  
-  const totalQuantity = quantity;
-  const contractValue = totalQuantity * price;
-  
-  // FUTURES MARGIN
-  if (contractType === 'FUTURES') {
-    const marginKey = instrumentType; // FUTIDX or FUTSTK
-    const rates = MARGIN_RATES[marginKey] || MARGIN_RATES.FUTSTK;
-    
-    const spanMargin = contractValue * rates.span;
-    const exposureMargin = contractValue * rates.exposure;
-    const marginRequired = spanMargin + exposureMargin;
-    
-    return {
-      type: 'FUTURES',
-      contractValue: contractValue,
-      marginRequired: marginRequired,
-      spanMargin: spanMargin,
-      exposureMargin: exposureMargin,
-      marginPercent: rates.total * 100,
-      isMarginOrder: true,
-      breakdown: `SPAN: ₹${spanMargin.toFixed(2)}, Exposure: ₹${exposureMargin.toFixed(2)}`
-    };
-  }
-  
-  // OPTIONS MARGIN
-  if (contractType === 'CE' || contractType === 'PE') {
-    const premium = contractValue; // Option premium
-    
-    // BUY OPTION - Only premium required
-    if (orderType === 'BUY') {
-      return {
-        type: 'OPTION_BUY',
-        premium: premium,
-        marginRequired: premium,
-        spanMargin: 0,
-        exposureMargin: 0,
-        isMarginOrder: false,
-        breakdown: `Premium payment: ₹${premium.toFixed(2)}`
-      };
-    }
-    
-    // SELL OPTION - SPAN + Exposure + Premium received
-    const marginKey = `${instrumentType}_SELL`; // OPTIDX_SELL or OPTSTK_SELL
-    const rates = MARGIN_RATES[marginKey] || MARGIN_RATES.OPTSTK_SELL;
-    
-    // Calculate margin based on strike price (notional value)
-    const notionalValue = totalQuantity * (strikePrice || price * 10);
-    const spanMargin = notionalValue * rates.span;
-    const exposureMargin = notionalValue * rates.exposure;
-    const marginRequired = spanMargin + exposureMargin;
-    
-    return {
-      type: 'OPTION_SELL',
-      notionalValue: notionalValue,
-      premium: premium,
-      marginRequired: marginRequired,
-      spanMargin: spanMargin,
-      exposureMargin: exposureMargin,
-      premiumReceived: premium,
-      netMargin: marginRequired - premium, // Net margin after premium credit
-      marginPercent: rates.total * 100,
-      isMarginOrder: true,
-      breakdown: `SPAN: ₹${spanMargin.toFixed(2)}, Exposure: ₹${exposureMargin.toFixed(2)}, Premium received: ₹${premium.toFixed(2)}`
-    };
-  }
-  
-  // Default fallback
-  return {
-    type: 'UNKNOWN',
-    marginRequired: contractValue,
-    isMarginOrder: false,
-    breakdown: 'Unable to calculate margin'
-  };
+  return Math.max(0, liqCross);
 }
 
 /**
- * Check if user has sufficient margin
- * @param {Number} availableBalance - User's available balance
- * @param {Number} marginRequired - Required margin
- * @returns {Object} Check result
+ * SHORT position liquidation price
+ * @param {number} entryPrice    - entry price
+ * @param {number} qty           - quantity held
+ * @param {number} walletBalance - margin/wallet available
+ * @returns {number}
  */
-function checkMarginAvailability(availableBalance, marginRequired) {
-  const hasMargin = availableBalance >= marginRequired;
-  const shortfall = hasMargin ? 0 : marginRequired - availableBalance;
-  
-  return {
-    hasMargin,
-    availableBalance,
-    marginRequired,
-    shortfall,
-    utilizationPercent: (marginRequired / availableBalance * 100).toFixed(2)
-  };
+function crossMarginLiquidationShort(entryPrice, qty, walletBalance) {
+  if (qty <= 0) return 0;
+  const denom = qty * (1 + MAINTENANCE_MARGIN_RATE);
+  if (denom <= 0) return 0;
+  return (walletBalance + entryPrice * qty) / denom;
 }
 
 /**
- * Calculate intraday margin (usually lower)
- * @param {Object} orderDetails - Order details
- * @returns {Object} Margin breakdown
+ * Main entry — get liquidation price for any position
+ * @param {number} entryPrice    - entry price
+ * @param {number} qty           - quantity held
+ * @param {number} walletBalance - wallet/margin balance for this position
+ * @param {number} leverage      - leverage multiplier (e.g. 5 for 5x)
+ * @param {string} tradeType     - 'LONG'|'BUY'  or  'SHORT'|'SELL'
+ * @returns {number} liquidation price (0 = no liquidation risk)
  */
-function calculateIntradayMargin(orderDetails) {
-  const standardMargin = calculateFOMargin(orderDetails);
-  
-  // Intraday margin is typically 50-60% of delivery margin
-  const intradayMultiplier = 0.55;
-  
-  return {
-    ...standardMargin,
-    marginRequired: standardMargin.marginRequired * intradayMultiplier,
-    spanMargin: standardMargin.spanMargin * intradayMultiplier,
-    exposureMargin: standardMargin.exposureMargin * intradayMultiplier,
-    intradayDiscount: (1 - intradayMultiplier) * 100,
-    breakdown: `${standardMargin.breakdown} (Intraday 45% discount applied)`
-  };
+function getLiquidationPrice(entryPrice, qty, walletBalance, leverage, tradeType) {
+  const lev = Math.max(1, leverage || 1);
+  if (entryPrice <= 0 || qty <= 0) return 0;
+  const type = (tradeType || '').toUpperCase();
+  if (type === 'BUY'  || type === 'LONG')  return crossMarginLiquidationLong(entryPrice, qty, walletBalance, lev);
+  if (type === 'SELL' || type === 'SHORT') return crossMarginLiquidationShort(entryPrice, qty, walletBalance);
+  return 0;
 }
 
-/**
- * Calculate margin for entire portfolio
- * @param {Array} positions - Array of open positions
- * @returns {Object} Portfolio margin summary
- */
-function calculatePortfolioMargin(positions) {
-  let totalMarginUsed = 0;
-  let totalEquityValue = 0;
-  let totalFOValue = 0;
-  
-  const marginBreakdown = {
-    equity: 0,
-    futures: 0,
-    optionsBuy: 0,
-    optionsSell: 0
-  };
-  
-  positions.forEach(position => {
-    const margin = calculateFOMargin({
-      instrumentType: position.instrumentType,
-      contractType: position.contractType,
-      orderType: position.type,
-      quantity: position.quantity,
-      price: position.avgPrice,
-      lotSize: position.lotSize,
-      strikePrice: position.strikePrice
-    });
-    
-    totalMarginUsed += margin.marginRequired;
-    
-    if (position.instrumentType === 'EQUITY') {
-      totalEquityValue += margin.marginRequired;
-      marginBreakdown.equity += margin.marginRequired;
-    } else {
-      totalFOValue += margin.contractValue || margin.notionalValue || 0;
-      
-      if (position.contractType === 'FUTURES') {
-        marginBreakdown.futures += margin.marginRequired;
-      } else if (position.type === 'BUY') {
-        marginBreakdown.optionsBuy += margin.marginRequired;
-      } else {
-        marginBreakdown.optionsSell += margin.marginRequired;
-      }
-    }
-  });
-  
-  return {
-    totalMarginUsed,
-    totalEquityValue,
-    totalFOValue,
-    marginBreakdown,
-    positionCount: positions.length
-  };
-}
-
-/**
- * Format margin details for display
- * @param {Object} marginDetails - Margin calculation result
- * @returns {String} Formatted string
- */
-function formatMarginDisplay(marginDetails) {
-  if (!marginDetails.isMarginOrder) {
-    return `Full payment: ₹${marginDetails.marginRequired.toFixed(2)}`;
-  }
-  
-  const lines = [
-    `Contract Value: ₹${(marginDetails.contractValue || marginDetails.notionalValue || 0).toFixed(2)}`,
-    `Margin Required: ₹${marginDetails.marginRequired.toFixed(2)} (${marginDetails.marginPercent}%)`,
-    marginDetails.breakdown
-  ];
-  
-  if (marginDetails.premiumReceived) {
-    lines.push(`Premium Received: ₹${marginDetails.premiumReceived.toFixed(2)}`);
-    lines.push(`Net Margin: ₹${marginDetails.netMargin.toFixed(2)}`);
-  }
-  
-  return lines.join('\n');
-}
-
-module.exports = {
-  calculateFOMargin,
-  calculateIntradayMargin,
-  checkMarginAvailability,
-  calculatePortfolioMargin,
-  formatMarginDisplay,
-  MARGIN_RATES
-};
+module.exports = { getLiquidationPrice, crossMarginLiquidationLong, crossMarginLiquidationShort, MAINTENANCE_MARGIN_RATE };
