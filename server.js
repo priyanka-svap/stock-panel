@@ -31,7 +31,9 @@ app.use('/api/watchlist', require('./routes/watchlist'));
 app.use('/api/funds', require('./routes/funds'));
 app.use('/api/market', require('./routes/marketDepthRoutes'));
 app.use('/api/contracts', require('./routes/contracts'));
-
+// app.js / server.js
+const transactionHistory = require('./routes/transactionHistory');
+app.use('/api/transactions', transactionHistory);
 // Health check
 app.get('/health', (req, res) => {
   res.json({
