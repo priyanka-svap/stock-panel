@@ -77,7 +77,7 @@ console.log(bal,"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 console.log(pos,bal)
  const entryPrice=pos.entryPrice;
    const qty=   pos.quantity;
-    const  walletBalance=Number(bal);        // walletBalance = margin blocked for pos position
+    const  walletBalance=Number(bal)+Number(pos.marginUsed);        // walletBalance = margin blocked for pos position
      const leverage= pos.marginMultiplier || 1;
     const positionType=  pos.positionType      
 if (qty <= 0) return 0;
