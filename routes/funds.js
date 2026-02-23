@@ -18,6 +18,7 @@ router.get('/', auth, async (req, res) => {
         availableBalance: user.availableBalance,
         usedMargin: user.usedMargin,
         totalPnL: user.totalPnL,
+        totalBalance: user.availableBalance+ user.usedMargin,
         transactions
       }
     });
