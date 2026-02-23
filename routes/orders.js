@@ -99,8 +99,8 @@ router.post('/place', auth, async (req, res) => {
       console.log(order.netAmount,order.marginUsed,"vgvfgfgfg");
       if (!user.hasEnoughMargin(order.netAmount))
         return res.status(200).json({
-          success: false, message: 'Insufficient margin',
-          required: order.netAmount, available: user.availableMargin
+          success: false, message: 'Insufficient margin',data:{
+          required: order.netAmount, available: user.availableMargin}
         });
 
       // ✅ useMargin: usedMargin++ AND availableBalance-- (both in User method)
