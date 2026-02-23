@@ -98,7 +98,7 @@ router.post('/place', auth, async (req, res) => {
     if (TYPE === 'BUY') {
       console.log(order.netAmount,order.marginUsed,"vgvfgfgfg");
       if (!user.hasEnoughMargin(order.netAmount))
-        return res.status(400).json({
+        return res.status(200).json({
           success: false, message: 'Insufficient margin',
           required: order.netAmount, available: user.availableMargin
         });
