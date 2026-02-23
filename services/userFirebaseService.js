@@ -73,6 +73,7 @@ function calcLiquidationPrice(pos,bal) {
 //     : entry + marginPerUnit;
 // console.log(raw)
 //   return parseFloat(Math.max(0, raw).toFixed(2));
+console.log(bal,"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 console.log(pos,bal)
  const entryPrice=pos.entryPrice;
    const qty=   pos.quantity;
@@ -164,6 +165,7 @@ async function syncSingleUserToFirebase(userId) {
       totalInvestment    += investedVal;
 
       // ✅ Correct liquidation price
+
       const liqPrice = calcLiquidationPrice(pos,user.availableBalance);
       let liqDist = null, liqPct = null, liqRisk = null;
       if (liqPrice !== null && markPrice > 0) {
