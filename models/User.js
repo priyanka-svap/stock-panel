@@ -147,7 +147,7 @@ userSchema.set('toObject', { virtuals: true });
 
 // METHODS
 userSchema.methods.hasEnoughMargin = function(requiredAmount) {
-  return this.availableMargin >= requiredAmount;
+  return this.availableBalance >= requiredAmount;
 };
 
 userSchema.methods.useMargin = function(amount) {
