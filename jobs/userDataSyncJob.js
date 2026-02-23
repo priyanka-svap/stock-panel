@@ -250,7 +250,7 @@ async function updateAllUsersPnL() {
           [`users/${uid}/positions/${posId}/isActive`]:         true,
           [`users/${uid}/positions/${posId}/lastUpdated`]:      Date.now(),
         });
-      }
+      
 
     
        // ✅ consistent formula
@@ -279,6 +279,7 @@ async function updateAllUsersPnL() {
     for (const { pos, markPrice, reason } of toAutoClose) {
       await autoClosePosition(pos, markPrice, reason);
     }
+  }
 
   } catch (e) {
     console.error('❌ P&L update error:', e.message);
