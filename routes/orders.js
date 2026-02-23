@@ -52,7 +52,7 @@ router.post('/place', auth, async (req, res) => {
 
     // SL/TP validation
     if (stopLoss != null) {
-      if (TYPE === 'BUY'  && +stopLoss >= +price) return res.status(400).json({ success: false, message: 'SL (BUY) must be BELOW entry price' });
+      if (TYPE === 'BUY'  && +stopLoss <= +price) return res.status(400).json({ success: false, message: 'SL (BUY) must be BELOW entry price' });
       if (TYPE === 'SELL' && +stopLoss <= +price) return res.status(400).json({ success: false, message: 'SL (SELL) must be ABOVE entry price' });
     }
     if (takeProfit != null) {
