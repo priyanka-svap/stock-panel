@@ -421,7 +421,7 @@ router.patch('/users/:id', adminAuth, async (req, res) => {
         });
     }
 });
-router.put('/users/:userId', adminAuth, checkPermission('canManageUsers'), async (req, res) => {
+router.put('/users/add-funds/:userId', adminAuth, checkPermission('canManageUsers'), async (req, res) => {
   try {
     const { fullName, email, availableBalance, isActive, method, notes } = req.body;
     
