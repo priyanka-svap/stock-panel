@@ -97,7 +97,7 @@ async function monitorSLTP() {
       await position.save();
 
       // ✅ releaseMargin: usedMargin kam karo + availableBalance (margin) wapas do
-      user.releaseMargin(pos.marginUsed);
+      user.releaseMargin(position.marginUsed);  // ✅ fresh loaded doc, not stale .lean() object
       // PnL aur exit brokerage availableBalance mein reflect karo
       user.availableBalance   += position.realizedPnL; // profit add / loss deduct
       user.availableBalance   -= exitBrok;              // exit brokerage deduct

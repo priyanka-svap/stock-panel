@@ -11,7 +11,7 @@ const Order    = require('../models/Order');
 const Stock    = require('../models/Stock');
 const User     = require('../models/User');
 const Position = require('../models/Position');
-const { forceSyncUserToFirebase } = require('../services/userFirebaseService');
+const { syncSingleUserToFirebase } = require('../services/userFirebaseService');
 
 let monitorInterval = null;
 
@@ -163,34 +163,18 @@ async function executePendingOrder(order, user, execPrice) {
 
     if (pos.quantity <= order.quantity) {
       // Full close
-      const exitValue  = execPrice * pos.quantity;
-      const gross      = exitValue - pos.investmentValue;
-      const realizedPnL = gross - (pos.totalBrokerage || 0) - exitBrok;
-
-      pos.exitPrice     = execPrice;
-      pos.exitBrokerage = exitBrok;
-      pos.totalBrokerage = (pos.entryBrokerage || 0) + exitBrok;
-      pos.exitDate      = new Date();
-      pos.exitedAt      = new Date();
-      pos.isActive      = false;
-      pos.isOpen        = false;
-      pos.closeReason   = 'MANUAL';
-      pos.realizedPnL   = realizedPnL;
-      pos.finalPnL      = realizedPnL;
-      pos.currentValue  = exitValue;
-      if (pos.investmentValue > 0) {
-        pos.pnlPercentage = (realizedPnL / pos.investmentValue) * 100;
-      }
+      // ✅ pos.close() use karo — pre-save hook chalega, liquidationPrice/pnl update hoga
+      const marginToRelease = pos.marginUsed || 0;
+      pos.close(execPrice, exitBrok, 'MANUAL');
       await pos.save();
 
-      // ✅ releaseMargin: usedMargin kam karo + availableBalance wapas do (margin unblock)
-      const marginToRelease = pos.marginUsed || 0;
+      // ✅ releaseMargin: usedMargin-- AND availableBalance++ (margin unblock)
       user.releaseMargin(marginToRelease);
-      // ab sirf PnL diff aur exit brokerage adjust karo
-      user.availableBalance += realizedPnL; // profit add / loss deduct
-      user.availableBalance -= exitBrok;    // exit brokerage deduct
-      user.totalPnL          = (user.totalPnL || 0) + realizedPnL;
-      user.todayPnL          = (user.todayPnL || 0) + realizedPnL;
+      // ✅ pos.close() ke andar realizedPnL = gross - totalBrokerage (entryBrok+exitBrok)
+      //    toh yahan sirf PnL adjust karo — exitBrok alag se NAHI hatao (already included)
+      user.availableBalance += pos.realizedPnL; // profit add / loss deduct
+      user.totalPnL          = (user.totalPnL || 0) + pos.realizedPnL;
+      user.todayPnL          = (user.todayPnL || 0) + pos.realizedPnL;
 
     } else {
       // ── Partial close ──
@@ -277,7 +261,7 @@ async function monitorPendingOrders() {
         console.log(`   Trigger: ₹${order.limitPrice} | Market: ₹${currentPrice} | Exec: ₹${execPrice}`);
 
         await executePendingOrder(order, user, execPrice);
-        await forceSyncUserToFirebase(user._id.toString());
+        await syncSingleUserToFirebase(user._id.toString());
         console.log(`   ✅ Executed: ${order.symbol} @ ₹${execPrice}`);
 
       } catch (execErr) {
