@@ -608,7 +608,7 @@ function startContinuousUpdates() {
 
   // ── Watchlist: every 5 seconds (with live prices) ──
   watchlistInterval = setInterval(async () => {
-    await updateAllUsersWatchlist();
+   if (isMarketOpen())   await updateAllUsersWatchlist();
   }, 5000);
 
   // ── Status log: every 60 seconds ──
