@@ -149,7 +149,7 @@ async function syncSingleUserToFirebase(userId) {
     let totalUnrealizedPnL = 0;
     let totalInvestment    = 0;
     const positionsData    = {};
-
+    const balance = calcBalanceFields(user);
     positions.forEach(pos => {
       const markPrice  = priceMap[pos.symbol] || pos.currentPrice || pos.entryPrice || 0;
       const investedVal = pos.investmentValue || (pos.entryPrice * pos.quantity) || 0;
@@ -167,6 +167,7 @@ async function syncSingleUserToFirebase(userId) {
       // ✅ Correct liquidation price
 
       const liqPrice = calcLiquidationPrice(pos,user.availableBalance);
+      
       let liqDist = null, liqPct = null, liqRisk = null;
       if (liqPrice !== null && markPrice > 0) {
         liqDist = parseFloat(Math.abs(markPrice - liqPrice).toFixed(2));
@@ -207,6 +208,7 @@ async function syncSingleUserToFirebase(userId) {
         expiryMonth:      pos.expiryMonth     || null,
         isActive:         true,
         entryDate:        pos.entryDate || pos.createdAt,
+        availableBalance: balance.availableBalance,
         lastUpdated:      Date.now()
       };
     });
@@ -226,7 +228,7 @@ async function syncSingleUserToFirebase(userId) {
 
     // ── Firebase PATCH ──
     const uid     = userId.toString();
-    const balance = calcBalanceFields(user);
+    
 
     const updates = {
       [`users/${uid}/profile`]: {

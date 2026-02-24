@@ -212,7 +212,7 @@ async function updateAllUsersPnL() {
       ).lean();
  if (userDoc) {
         const bal = calcBalanceFields(userDoc);
-        console.log(bal,"hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh")
+        
         // ✅ Correct liquidation price (same formula as userFirebaseService)
         const liquidationPrice = calcLiquidationPrice(pos,bal?.availableBalance);
         let liquidationDist = null, liquidationPct = null, liquidationRisk = null;
