@@ -249,6 +249,7 @@ async function updateAllUsersPnL() {
           [`users/${uid}/positions/${posId}/liquidationRisk`]:  liquidationRisk,
           [`users/${uid}/positions/${posId}/isActive`]:         true,
           [`users/${uid}/positions/${posId}/lastUpdated`]:      Date.now(),
+           [`users/${uid}/positions/${posId}/availableBalance`]:    bal.availableBalance,
         });
       
 
