@@ -68,17 +68,17 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/stockPane
   .then(() => {
     console.log('✅ MongoDB connected');
 
-    // // 1. Stock/Index price updates → Firebase  (every 2s)
-    // startContinuousUpdates();
+    // 1. Stock/Index price updates → Firebase  (every 2s)
+    startContinuousUpdates();
 
-    // // 2. User data → Firebase: full sync every 10s + P&L every 3s
-    // startUserDataSync(10, 3000);
+    // 2. User data → Firebase: full sync every 10s + P&L every 3s
+    startUserDataSync(10, 3000);
 
-    // // 3. PENDING order monitor: LIMIT/SL/SL-M execution  (every 2s)
-    // startPendingOrderMonitor(2000);
+    // 3. PENDING order monitor: LIMIT/SL/SL-M execution  (every 2s)
+    startPendingOrderMonitor(2000);
 
-    // // 4. SL/TP auto-exit monitor  (every 3s)
-    // startSLTPMonitoring(3000);
+    // 4. SL/TP auto-exit monitor  (every 3s)
+    startSLTPMonitoring(3000);
 
     console.log('\n' + '═'.repeat(55));
     console.log('🚀 All systems running:');
