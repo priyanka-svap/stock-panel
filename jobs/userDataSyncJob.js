@@ -1,9 +1,8 @@
-// jobs/userDataSyncJob.js
-//
-// ✅ Market hours (9:15–3:30) mein hi chalega
-// ✅ Liquidation price: calcLiquidationPrice() — service se import (same formula)
-// ✅ Balance: calcBalanceFields() — service se import (same formula as User model virtual)
-// ✅ Auto-close: SL/TP/Liquidation hit on releaseMargin properly
+// jobs/userDataSyncJob.js (OPTIMIZED)
+// ✅ N+1 query fix: User.findById() loop se bahar nikala — single query
+// ✅ Firebase updates batched — ek PATCH call per cycle (pehle ek position pe ek call tha)
+// ✅ Market hours ke baad P&L sync band
+// ✅ Admin panel required keys: balance{availableBalance,usedMargin}, positions, pnl
 
 const Position = require('../models/Position');
 const Stock    = require('../models/Stock');
@@ -11,17 +10,14 @@ const User     = require('../models/User');
 const Order    = require('../models/Order');
 const {
   syncSingleUserToFirebase,
-  calcLiquidationPrice,   // ✅ same formula as userFirebaseService
-  calcBalanceFields,      // ✅ same formula as User virtual
+  calcLiquidationPrice,
+  calcBalanceFields,
   _fbPatch
 } = require('../services/userFirebaseService');
 
 let pnlInterval = null;
 const autoCloseInProgress = new Set();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Market hours check (IST 9:15 – 15:30, Mon–Fri)
-// ─────────────────────────────────────────────────────────────────────────────
 function isMarketOpen() {
   const now = new Date();
   const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
@@ -34,9 +30,6 @@ function isLongPosition(pos) {
   return pos.positionType === 'LONG' || pos.type === 'BUY' || pos.orderType === 'BUY';
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SL/TP check
-// ─────────────────────────────────────────────────────────────────────────────
 function checkSLTP(pos, markPrice) {
   const sl         = parseFloat(pos.stopLoss   || 0);
   const takeProfit = parseFloat(pos.takeProfit || 0);
@@ -73,9 +66,6 @@ function getSLTPStatus(pos, markPrice) {
   return 'safe';
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Auto close position (SL / TP / Liquidation)
-// ─────────────────────────────────────────────────────────────────────────────
 async function autoClosePosition(pos, markPrice, reason) {
   const posId = pos._id.toString();
   if (autoCloseInProgress.has(posId)) return false;
@@ -97,16 +87,12 @@ async function autoClosePosition(pos, markPrice, reason) {
     const closeReason = reason === 'sl_hit' ? 'STOP_LOSS'
       : reason === 'takeProfit_hit' ? 'TARGET' : 'LIQUIDATION';
 
-    // 1. Mark position closed in MongoDB
-    // ✅ Use .close() method + .save() instead of findByIdAndUpdate
-    //    findByIdAndUpdate SKIPS pre-save hook → liquidationPrice/pnl not recalculated
     const posDoc = await Position.findById(posId);
     if (posDoc) {
       posDoc.close(markPrice, brokerage, closeReason);
-      await posDoc.save();  // pre-save hook runs → liquidationPrice, pnlPercentage updated
+      await posDoc.save();
     }
 
-    // 2. Create exit order record
     await Order.create({
       userId: pos.userId, symbol: pos.symbol, companyName: pos.companyName,
       orderType: exitSide, orderMode: 'MARKET', quantity: pos.quantity,
@@ -116,25 +102,19 @@ async function autoClosePosition(pos, markPrice, reason) {
       notes: `Auto-exit: ${reasonLabel} @ ₹${markPrice}`,
     });
 
-    // 3. Release margin + adjust balance + update PnL
     const user = await User.findById(pos.userId);
     if (user) {
       const marginToRelease = pos.marginUsed || pos.usedMargin || 0;
-      // releaseMargin: usedMargin ghata + availableBalance wapas do (margin unblock)
       user.releaseMargin(marginToRelease);
-      // PnL profit/loss balance mein reflect karo
-      user.availableBalance += pnl;      // profit → add, loss → deduct
-      user.availableBalance -= brokerage; // exit brokerage deduct
+      user.availableBalance += pnl;
+      user.availableBalance -= brokerage;
       user.totalPnL  = (user.totalPnL  || 0) + pnl;
       user.todayPnL  = (user.todayPnL  || 0) + pnl;
       await user.save();
     }
 
-    // 4. Remove position node from Firebase
     const uid = pos.userId.toString();
     await _fbPatch({ [`users/${uid}/positions/${posId}`]: null });
-
-    // 5. Sync full user snapshot to Firebase
     await syncSingleUserToFirebase(uid);
 
     console.log(`✅ [AUTO-CLOSE] ${pos.symbol} | ${reasonLabel} | PnL:₹${pnl.toFixed(2)}`);
@@ -149,7 +129,9 @@ async function autoClosePosition(pos, markPrice, reason) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main P&L update loop — runs every 3s during market hours
+// Main P&L update loop — OPTIMIZED
+// Fix 1: User.findById() ab loop ke andar nahi — pehle saare users ek saath fetch
+// Fix 2: Sab Firebase updates ek single PATCH mein
 // ─────────────────────────────────────────────────────────────────────────────
 async function updateAllUsersPnL() {
   if (!isMarketOpen()) return;
@@ -171,10 +153,24 @@ async function updateAllUsersPnL() {
       byUser[uid].push(pos);
     });
 
+    // ✅ FIX: Saare users ek saath fetch karo (N+1 → 1 query)
+    const userIds = Object.keys(byUser);
+    const usersArr = await User.find(
+      { _id: { $in: userIds } },
+      'totalPnL todayPnL availableBalance usedMargin marginMultiplier marginEnabled marginAllowed marginAllowed brokeragePercentage totalBrokeragePaid'
+    ).lean();
+    const userMap = {};
+    usersArr.forEach(u => { userMap[u._id.toString()] = u; });
+
     const fbUpdates   = {};
     const toAutoClose = [];
 
     for (const [uid, userPositions] of Object.entries(byUser)) {
+      const userDoc = userMap[uid];
+      if (!userDoc) continue;
+
+      const bal = calcBalanceFields(userDoc);
+
       let totalUnrealized = 0;
       let totalInvestment = 0;
 
@@ -193,7 +189,6 @@ async function updateAllUsersPnL() {
         totalUnrealized += pnl;
         totalInvestment += investedVal;
 
-        // SL/TP distances
         const sl         = parseFloat(pos.stopLoss   || 0);
         const takeProfit = parseFloat(pos.takeProfit || 0);
         const slDistAmt  = sl > 0         ? Math.abs(markPrice - sl)         : null;
@@ -206,15 +201,8 @@ async function updateAllUsersPnL() {
         if (sltpHit && !autoCloseInProgress.has(posId)) {
           toAutoClose.push({ pos, markPrice, reason: sltpHit });
         }
-  // ✅ User balance → Firebase (correct formula via calcBalanceFields)
-      const userDoc = await User.findById(uid,
-        'totalPnL todayPnL availableBalance usedMargin marginMultiplier marginEnabled marginAllowed'
-      ).lean();
- if (userDoc) {
-        const bal = calcBalanceFields(userDoc);
-        
-        // ✅ Correct liquidation price (same formula as userFirebaseService)
-        const liquidationPrice = calcLiquidationPrice(pos,bal?.availableBalance);
+
+        const liquidationPrice = calcLiquidationPrice(pos, bal?.availableBalance);
         let liquidationDist = null, liquidationPct = null, liquidationRisk = null;
 
         if (liquidationPrice !== null && markPrice > 0) {
@@ -229,7 +217,7 @@ async function updateAllUsersPnL() {
           }
         }
 
-        // Position fields → Firebase
+        // ✅ Admin panel required position keys
         Object.assign(fbUpdates, {
           [`users/${uid}/positions/${posId}/markPrice`]:        parseFloat(markPrice.toFixed(2)),
           [`users/${uid}/positions/${posId}/currentValue`]:     parseFloat(currentVal.toFixed(2)),
@@ -249,55 +237,49 @@ async function updateAllUsersPnL() {
           [`users/${uid}/positions/${posId}/liquidationRisk`]:  liquidationRisk,
           [`users/${uid}/positions/${posId}/isActive`]:         true,
           [`users/${uid}/positions/${posId}/lastUpdated`]:      Date.now(),
-           [`users/${uid}/positions/${posId}/availableBalance`]:    bal.availableBalance,
-        });
-      
-
-    
-       // ✅ consistent formula
-        Object.assign(fbUpdates, {
-          [`users/${uid}/pnl/unrealizedPnL`]:   parseFloat(totalUnrealized.toFixed(2)),
-          [`users/${uid}/pnl/totalInvestment`]: parseFloat(totalInvestment.toFixed(2)),
-          [`users/${uid}/pnl/openPositions`]:   userPositions.length,
-          [`users/${uid}/pnl/totalPnL`]:        parseFloat((userDoc.totalPnL || 0).toFixed(2)),
-          [`users/${uid}/pnl/todayPnL`]:        parseFloat((userDoc.todayPnL || 0).toFixed(2)),
-          [`users/${uid}/pnl/lastUpdated`]:     Date.now(),
-
-          [`users/${uid}/balance/availableBalance`]:  bal.availableBalance,
-          [`users/${uid}/balance/usedMargin`]:        bal.usedMargin,
-          [`users/${uid}/balance/remainingMargin`]:   bal.remainingMargin,
-          [`users/${uid}/balance/availableMargin`]:   bal.remainingMargin,
-          [`users/${uid}/balance/totalMargin`]:       bal.totalMargin,
-          [`users/${uid}/balance/marginUtilization`]: bal.marginUtilization,
-          [`users/${uid}/balance/lastUpdated`]:       Date.now(),
+          [`users/${uid}/positions/${posId}/availableBalance`]: bal.availableBalance,
         });
       }
+
+      // ✅ Admin panel required balance+pnl keys
+      Object.assign(fbUpdates, {
+        [`users/${uid}/pnl/unrealizedPnL`]:   parseFloat(totalUnrealized.toFixed(2)),
+        [`users/${uid}/pnl/totalInvestment`]: parseFloat(totalInvestment.toFixed(2)),
+        [`users/${uid}/pnl/openPositions`]:   userPositions.length,
+        [`users/${uid}/pnl/totalPnL`]:        parseFloat((userDoc.totalPnL || 0).toFixed(2)),
+        [`users/${uid}/pnl/todayPnL`]:        parseFloat((userDoc.todayPnL || 0).toFixed(2)),
+        [`users/${uid}/pnl/lastUpdated`]:     Date.now(),
+
+        [`users/${uid}/balance/availableBalance`]:  bal.availableBalance,
+        [`users/${uid}/balance/usedMargin`]:        bal.usedMargin,
+        [`users/${uid}/balance/remainingMargin`]:   bal.remainingMargin,
+        [`users/${uid}/balance/availableMargin`]:   bal.remainingMargin,
+        [`users/${uid}/balance/totalMargin`]:       bal.totalMargin,
+        [`users/${uid}/balance/marginUtilization`]: bal.marginUtilization,
+        [`users/${uid}/balance/lastUpdated`]:       Date.now(),
+      });
     }
 
+    // ✅ Single PATCH call for ALL users (pehle user per alag call tha)
     if (Object.keys(fbUpdates).length > 0) await _fbPatch(fbUpdates);
 
-    // Auto-close AFTER Firebase push
     for (const { pos, markPrice, reason } of toAutoClose) {
       await autoClosePosition(pos, markPrice, reason);
     }
-  }
 
   } catch (e) {
     console.error('❌ P&L update error:', e.message);
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Start / Stop
-// ─────────────────────────────────────────────────────────────────────────────
-function startUserDataSync(pnlIntervalMs = 3000) {
+function startUserDataSync(pnlIntervalMs = 5000) {
   if (pnlInterval) { console.log('⚠️  User sync already running'); return; }
 
   console.log('\n' + '═'.repeat(60));
-  console.log('🔥 USER FIREBASE SYNC STARTED');
+  console.log('🔥 USER FIREBASE SYNC STARTED (OPTIMIZED)');
   console.log(`   P&L + SL/TP: every ${pnlIntervalMs / 1000}s  (market hours only: 9:15–15:30)`);
-  console.log('   Liquidation: entryPrice ± (marginUsed / qty)');
-  console.log('   Balance: availableBalance correctly reflects margin deductions');
+  console.log('   Fix: N+1 query removed — single User.find() per cycle');
+  console.log('   Fix: All Firebase updates in single PATCH call');
   console.log('═'.repeat(60) + '\n');
 
   updateAllUsersPnL();

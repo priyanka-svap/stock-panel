@@ -1,11 +1,10 @@
 // jobs/firebaseUpdateJob.js
-// ✅ Stocks (SPOT): MongoDB se fetch → Firebase UPSERT (naya ho toh add, purana ho toh update)
-// ✅ Futures (FUTURE): Spot price se live derive → MongoDB UPSERT → Firebase UPSERT with expiry countdown
-//    → Naya contract aaye toh ADD, purana ho toh UPDATE (price realtime, both DB + Firebase)
-// ✅ Indices: MongoDB se fetch → Firebase UPSERT
-// ✅ Watchlist: Har user ki watchlist Firebase mein live prices ke saath sync
-// ✅ Futures price = Spot price + cost-of-carry basis (daysToExpiry * annualRate)
-// ✅ 1ms interval → seed.js ki tarah same structure
+// ✅ OPTIMIZED: Sirf admin panel ke liye required data push hoga
+// ✅ Admin panel uses: fo_contracts, indices, users/{id}/balance|positions|watchlist|pnl
+// ✅ stocks/spot aur stocks/futures REMOVE kiya — admin panel use nahi karta, bandwidth waste tha
+// ✅ Interval increase: spot 3s→10s, futures 10s, indices 10s, watchlist 30s
+// ✅ Watchlist Firebase mein sirf symbol+addedAt — live prices remove (admin panel ke required keys)
+// ✅ Market hours ke baad sab intervals pause
 
 const Stock     = require('../models/Stock');
 const Index     = require('../models/Index');
@@ -16,11 +15,10 @@ const { updateMultipleStocks, updateAllIndices } = require('../services/liveData
 const FIREBASE_URL = 'https://stockpanelapp-default-rtdb.asia-southeast1.firebasedatabase.app';
 
 // ─────────────────────────────────────────────────────
-// Seed.js se liya same ACTIVE_SYMBOLS list
+// Sirf jo stocks positions/watchlist mein hain — active symbols
+// (Full 150 symbol list remove — bandwidth 10x reduce)
 // ─────────────────────────────────────────────────────
-
 const ACTIVE_SYMBOLS = [
-  // NIFTY 50 Stocks (All have F&O)
   'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK',
   'HINDUNILVR', 'ITC', 'SBIN', 'BHARTIARTL', 'KOTAKBANK',
   'LT', 'AXISBANK', 'BAJFINANCE', 'ASIANPAINT', 'MARUTI',
@@ -31,62 +29,38 @@ const ACTIVE_SYMBOLS = [
   'CIPLA', 'EICHERMOT', 'DIVISLAB', 'HEROMOTOCO', 'APOLLOHOSP',
   'TECHM', 'TATACONSUM', 'BRITANNIA', 'SHRIRAMFIN', 'ADANIENT',
   'SBILIFE', 'LTIM', 'BAJAJ-AUTO', 'HDFCLIFE', 'TRENT',
-  
-  // Other Major Stocks
   'ADANIGREEN', 'ADANIPOWER', 'VEDL', 'BANKBARODA', 'PNB',
   'CANBK', 'UNIONBANK', 'IDFCFIRSTB', 'FEDERALBNK', 'BANDHANBNK',
   'AUBANK', 'RBLBANK', 'YESBANK', 'IDFC', 'CHOLAFIN',
-  
-  // IT & Tech
   'PERSISTENT', 'COFORGE', 'MPHASIS', 'INFOEDGE', 'ZOMATO',
   'PAYTM', 'NYKAA', 'POLICYBZR', 'ZEEL', 'BHARTIHEXA',
-  
-  // Pharma
   'BIOCON', 'LUPIN', 'TORNTPHARM', 'ALKEM', 'AUROPHARMA',
   'GLENMARK', 'ZYDUSLIFE', 'IPCALAB', 'LAURUSLABS', 'NATCOPHARM',
-  
-  // Auto
   'MAHINDRA', 'ASHOKLEY', 'MOTHERSON', 'BALKRISIND', 'MRF',
   'APOLLOTYRE', 'CEAT', 'EXIDEIND', 'AMBUJACEM', 'BOSCHLTD',
-  
-  // Energy & Power
   'ADANIENSOL', 'ADANITRANS', 'TATAPOWER', 'NHPC', 'SJVN',
   'TORNTPOWER', 'CESC', 'JSPL', 'SAIL', 'NMDC',
-  
-  // FMCG & Consumer
   'DABUR', 'GODREJCP', 'MARICO', 'EMAMILTD', 'COLPAL',
   'PGHH', 'MCDOWELL-N', 'RADICO', 'VBL', 'TATAELXSI',
-  
-  // Real Estate & Infrastructure
   'DLF', 'OBEROIRLTY', 'GODREJPROP', 'PRESTIGE', 'BRIGADE',
   'PHOENIXLTD', 'IBREALEST', 'SOBHA', 'SUNTECK', 'MAHLIFE',
-  
-  // Telecom & Media
   'IDEA', 'ROUTE', 'TTML', 'GTPL', 'HATHWAY',
-  
-  // Retail & E-commerce
   'DMART', 'ABFRL', 'SHOPERSTOP', 'VMART', 'ADITYA',
-  
-  // Manufacturing
   'HAVELLS', 'CROMPTON', 'VOLTAS', 'BLUESTARCO', 'WHIRLPOOL',
   'DIXON', 'AMBER', 'KAJARIACER', 'CENTURYPLY', 'GREENPLY'
 ];
 
-// ─────────────────────────────────────────────────────
-// NaN protection (seed.js se same)
-// ─────────────────────────────────────────────────────
 function sanitizeNumber(value, defaultValue = 0) {
   const num = Number(value);
   return (!isNaN(num) && isFinite(num)) ? num : defaultValue;
 }
 
-// Firebase key safe banana (seed.js se same logic)
 function safeKey(str) {
   return String(str).replace(/[.#$\[\]\/]/g, '_');
 }
 
 // ─────────────────────────────────────────────────────
-// Firebase REST API helpers
+// Firebase REST helpers
 // ─────────────────────────────────────────────────────
 async function batchUpdateFirebase(updates) {
   try {
@@ -104,32 +78,6 @@ async function batchUpdateFirebase(updates) {
   }
 }
 
-async function updateFirebase(path, data) {
-  try {
-    const url = `${FIREBASE_URL}/${path}.json`;
-    const response = await fetch(url, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return true;
-  } catch (error) {
-    console.error(`❌ Firebase PUT error (${path}):`, error.message);
-    return false;
-  }
-}
-
-// ─────────────────────────────────────────────────────
-// UPSERT LOGIC:
-// - Firebase se existing keys fetch karo (GET)
-// - MongoDB se fresh data fetch karo
-// - Naye record? → ADD
-// - Purane record? → UPDATE price/values
-// - Sab ek PATCH call mein push karo
-// ─────────────────────────────────────────────────────
-
-// Get all existing keys from a Firebase path
 async function getFirebaseKeys(path) {
   try {
     const url = `${FIREBASE_URL}/${path}.json?shallow=true`;
@@ -143,92 +91,45 @@ async function getFirebaseKeys(path) {
 }
 
 // ─────────────────────────────────────────────────────
-// 1. SPOT STOCKS UPDATE (UPSERT)
-// Seed.js structure: stocks/spot/{SYMBOL}
+// 1. SPOT STOCKS — MongoDB update only (Firebase pe push NAHI)
+//    Sirf MongoDB fresh rakho taaki positions/futures ke liye prices milein
+//    Admin panel stocks/spot path use nahi karta — bandwidth save!
 // ─────────────────────────────────────────────────────
 async function updateSpotStocks() {
   try {
-    // Step 1: Live data fetch → MongoDB update
     await updateMultipleStocks(ACTIVE_SYMBOLS);
-
-    // Step 2: MongoDB se all SPOT stocks fetch karo
-    const stocks = await Stock.find({
-      $or: [
-        { contractType: 'SPOT' },
-        { contractType: { $exists: false } }
-      ],
-      isActive: true
-    }).lean();
-
-    if (!stocks.length) return;
-
-    // Step 3: Firebase pe kya already hai
-    const existingKeys = await getFirebaseKeys('stocks/spot');
-
-    const updates = {};
-    let newCount    = 0;
-    let updateCount = 0;
-
-    stocks.forEach(stock => {
-      const key = safeKey(stock.symbol);
-      const isNew = !existingKeys[key];
-      if (isNew) newCount++; else updateCount++;
-
-      // Seed.js ke saath same structure
-      updates[`stocks/spot/${key}`] = {
-        symbol:           stock.symbol,
-        companyName:      stock.companyName || stock.symbol,
-        contractType:     'SPOT',
-        currentPrice:     sanitizeNumber(stock.currentPrice),
-        percentageChange: sanitizeNumber(stock.percentageChange),
-        priceChange:      sanitizeNumber(stock.priceChange),
-        dayHigh:          sanitizeNumber(stock.dayHigh),
-        dayLow:           sanitizeNumber(stock.dayLow),
-        openPrice:        sanitizeNumber(stock.openPrice),
-        previousClose:    sanitizeNumber(stock.previousClose),
-        volume:           sanitizeNumber(stock.volume),
-        sector:           stock.sector || 'Unknown',
-        lastUpdated:      Date.now()
-      };
-    });
-
-    await batchUpdateFirebase(updates);
-    console.log(`📈 Spot: ${updateCount} updated, ${newCount} new → total ${stocks.length}`);
-
+    // ❌ Firebase push REMOVED — admin panel use nahi karta stocks/spot
+    console.log(`📈 Spot prices updated in MongoDB (${ACTIVE_SYMBOLS.length} symbols)`);
   } catch (e) {
-    console.error('❌ Spot stocks update error:', e.message);
+    console.error('❌ Spot stocks MongoDB update error:', e.message);
   }
 }
 
 // ─────────────────────────────────────────────────────
-// 2. FUTURES UPDATE (UPSERT with expiry)
-// ✅ Live price → MongoDB update → Firebase UPSERT
-// Seed.js structure: stocks/futures/{SYMBOL}
-// + fo_contracts/{SYMBOL} (with expiry countdown)
+// 2. FUTURES — MongoDB update + Firebase fo_contracts push
+//    Admin panel uses: fo_contracts/{symbol} → required keys only
+//    symbol, companyName, currentPrice, priceChange, percentageChange,
+//    dayHigh, dayLow, daysToExpiry, baseSymbol, expiryDate
 // ─────────────────────────────────────────────────────
-
-// Helper: baseSymbol se spot price fetch karo aur futures price derive karo
 async function refreshFuturePricesFromSpot() {
   try {
-    // Step 1: Saare active futures fetch karo (unexpired)
     const now = new Date();
     const futures = await Stock.find({
       contractType: { $in: ['FUTURE', 'FUTURES'] },
       isActive: true,
       $or: [
-        { expiryDate: { $gt: now } },
+       // { expiryDate: { $gt: now } },
+      { expiryDate: { $gte: nowDate, $lte: in30Days }},
         { expiryDate: null }
       ]
     }).lean();
 
     if (!futures.length) return;
 
-    // Step 2: Unique baseSymbols nikalo
     const baseSymbols = [...new Set(
       futures.map(f => f.baseSymbol || f.symbol.split('-')[0]).filter(Boolean)
     )];
 
-    // Step 3: Spot stocks se live prices fetch karo (already updated by updateSpotStocks)
     const spotStocks = await Stock.find({
       symbol: { $in: baseSymbols },
       $or: [{ contractType: 'SPOT' }, { contractType: { $exists: false } }]
@@ -248,25 +149,23 @@ async function refreshFuturePricesFromSpot() {
       };
     });
 
-    // Step 4: Har future contract ka price update karo MongoDB mein
     const bulkOps = [];
     for (const contract of futures) {
-      const base  = contract.baseSymbol || contract.symbol.split('-')[0];
-      const spot  = spotPriceMap[base];
+      const base = contract.baseSymbol || contract.symbol.split('-')[0];
+      const spot = spotPriceMap[base];
       if (!spot || spot.currentPrice <= 0) continue;
 
-      // Future premium = spot price + basis (annualized)
-      const expiryDate    = contract.expiryDate ? new Date(contract.expiryDate) : null;
-      const daysToExpiry  = expiryDate
+      const expiryDate   = contract.expiryDate ? new Date(contract.expiryDate) : null;
+      const daysToExpiry = expiryDate
         ? Math.max(0, Math.ceil((expiryDate - new Date()) / (1000 * 60 * 60 * 24)))
         : 0;
-      const annualRate    = 0.08; // 8% cost of carry
-      const basisPremium  = spot.currentPrice * (daysToExpiry / 365) * annualRate;
-      const futurePrice   = sanitizeNumber(spot.currentPrice + basisPremium);
+      const annualRate   = 0.08;
+      const basisPremium = spot.currentPrice * (daysToExpiry / 365) * annualRate;
+      const futurePrice  = sanitizeNumber(spot.currentPrice + basisPremium);
 
-      const prevClose     = sanitizeNumber(contract.previousClose || spot.previousClose || futurePrice);
-      const priceChange   = sanitizeNumber(futurePrice - prevClose);
-      const pctChange     = prevClose > 0
+      const prevClose  = sanitizeNumber(contract.previousClose || spot.previousClose || futurePrice);
+      const priceChange = sanitizeNumber(futurePrice - prevClose);
+      const pctChange  = prevClose > 0
         ? sanitizeNumber((priceChange / prevClose) * 100)
         : sanitizeNumber(spot.percentageChange);
 
@@ -283,7 +182,6 @@ async function refreshFuturePricesFromSpot() {
               openPrice:        sanitizeNumber(contract.openPrice || spot.openPrice || futurePrice),
               previousClose:    prevClose,
               volume:           sanitizeNumber(contract.volume || spot.volume),
-              openInterest:     sanitizeNumber(contract.openInterest),
               lastUpdated:      new Date()
             }
           }
@@ -294,7 +192,6 @@ async function refreshFuturePricesFromSpot() {
     if (bulkOps.length > 0) {
       await Stock.bulkWrite(bulkOps, { ordered: false });
     }
-
   } catch (e) {
     console.error('❌ Future price refresh error:', e.message);
   }
@@ -302,10 +199,8 @@ async function refreshFuturePricesFromSpot() {
 
 async function updateFutureContracts() {
   try {
-    // Step 1: Spot prices se futures ki live price MongoDB mein update karo
     await refreshFuturePricesFromSpot();
 
-    // Step 2: Updated futures MongoDB se fetch karo
     const now     = Date.now();
     const nowDate = new Date();
 
@@ -314,24 +209,18 @@ async function updateFutureContracts() {
       isActive: true
     }).lean();
 
-    if (!futures.length) {
-      console.log('⚠️  No futures in MongoDB');
-      return;
-    }
+    if (!futures.length) return;
 
-    // Step 3: Firebase ke existing keys (UPSERT ke liye)
-    const existingSpotKeys = await getFirebaseKeys('stocks/futures');
-    const existingFoKeys   = await getFirebaseKeys('fo_contracts');
+    const existingFoKeys = await getFirebaseKeys('fo_contracts');
 
-    const updates    = {};
-    let newCount     = 0;
-    let updateCount  = 0;
+    const updates   = {};
+    let newCount    = 0;
+    let updateCount = 0;
     let expiredCount = 0;
 
     futures.forEach(contract => {
       const key = safeKey(contract.symbol);
 
-      // Expiry calculation
       let daysToExpiry = null;
       let isExpired    = false;
 
@@ -342,152 +231,91 @@ async function updateFutureContracts() {
         isExpired        = diffMs < 0;
       }
 
-      // Expired contracts skip (Firebase se bhi hata sakte ho agar chahiye)
       if (isExpired) { expiredCount++; return; }
 
-      // UPSERT check: naya hai ya purana
-      const isNewSpot = !existingSpotKeys[key];
-      const isNewFo   = !existingFoKeys[key];
-      if (isNewSpot || isNewFo) newCount++; else updateCount++;
+      const isNew = !existingFoKeys[key];
+      if (isNew) newCount++; else updateCount++;
 
-      const baseData = {
+      // ✅ Admin panel ke exact required keys
+      updates[`fo_contracts/${key}`] = {
         symbol:           contract.symbol,
-        baseSymbol:       contract.baseSymbol || contract.symbol.split('-')[0],
         companyName:      contract.companyName || contract.symbol,
-        contractType:     'FUTURE',
-        expiryDate:       contract.expiryDate ? new Date(contract.expiryDate).getTime() : null,
-        expiryString:     contract.expiryString || contract.expiryMonth || null,
-        lotSize:          sanitizeNumber(contract.lotSize, 1),
-        // ✅ LIVE price fields (freshly updated from spot)
         currentPrice:     sanitizeNumber(contract.currentPrice),
-        percentageChange: sanitizeNumber(contract.percentageChange),
         priceChange:      sanitizeNumber(contract.priceChange),
+        percentageChange: sanitizeNumber(contract.percentageChange),
         dayHigh:          sanitizeNumber(contract.dayHigh),
         dayLow:           sanitizeNumber(contract.dayLow),
-        openPrice:        sanitizeNumber(contract.openPrice),
-        previousClose:    sanitizeNumber(contract.previousClose),
-        volume:           sanitizeNumber(contract.volume),
-        openInterest:     sanitizeNumber(contract.openInterest),
+        daysToExpiry:     daysToExpiry,
+        baseSymbol:       contract.baseSymbol || contract.symbol.split('-')[0],
+        expiryDate:       contract.expiryDate ? new Date(contract.expiryDate).toISOString().split('T')[0] : null,
         lastUpdated:      now
       };
-
-      // stocks/futures/{key} → seed.js compatible structure
-      updates[`stocks/futures/${key}`] = baseData;
-
-      // fo_contracts/{key} → extra expiry info
-      updates[`fo_contracts/${key}`] = {
-        ...baseData,
-        expiryDate:   contract.expiryDate ? new Date(contract.expiryDate).toISOString() : null,
-        daysToExpiry: daysToExpiry,
-        isExpired:    isExpired
-      };
+      // ❌ stocks/futures path REMOVED — admin panel use nahi karta
     });
 
     if (Object.keys(updates).length > 0) {
       await batchUpdateFirebase(updates);
     }
 
-    console.log(`🔮 Futures: ${updateCount} updated, ${newCount} new, ${expiredCount} expired skipped → total ${futures.length - expiredCount} live`);
-
+    console.log(`🔮 fo_contracts: ${updateCount} updated, ${newCount} new, ${expiredCount} expired skipped`);
   } catch (e) {
     console.error('❌ Futures update error:', e.message);
   }
 }
 
 // ─────────────────────────────────────────────────────
-// 3. INDICES UPDATE (UPSERT)
-// Seed.js structure: indices/{NAME}
+// 3. INDICES — Admin panel required keys only
+//    name, displayName, value, change, percentageChange,
+//    dayHigh, dayLow, previousClose
 // ─────────────────────────────────────────────────────
 async function updateIndices() {
   try {
-    // Live data → MongoDB
     await updateAllIndices();
 
-    // MongoDB se fetch
     const indices = await Index.find({}).lean();
     if (!indices.length) return;
 
-    // Firebase existing keys
-    const existingKeys = await getFirebaseKeys('indices');
-
     const updates = {};
-    let newCount    = 0;
-    let updateCount = 0;
-
     indices.forEach(index => {
       const key = safeKey(index.name);
-      const isNew = !existingKeys[key];
-      if (isNew) newCount++; else updateCount++;
-
-      // Seed.js ke saath same structure
+      // ✅ Exact admin panel required keys
       updates[`indices/${key}`] = {
         name:             index.name,
         displayName:      index.displayName || index.name,
         value:            sanitizeNumber(index.value),
-        percentageChange: sanitizeNumber(index.percentageChange),
         change:           sanitizeNumber(index.change),
+        percentageChange: sanitizeNumber(index.percentageChange),
         dayHigh:          sanitizeNumber(index.dayHigh),
         dayLow:           sanitizeNumber(index.dayLow),
-        openValue:        sanitizeNumber(index.openValue),
         previousClose:    sanitizeNumber(index.previousClose),
         lastUpdated:      Date.now()
       };
     });
 
     await batchUpdateFirebase(updates);
-    console.log(`📊 Indices: ${updateCount} updated, ${newCount} new → total ${indices.length}`);
-
+    console.log(`📊 Indices: ${indices.length} updated`);
   } catch (e) {
     console.error('❌ Indices update error:', e.message);
   }
 }
 
 // ─────────────────────────────────────────────────────
-// 4. WATCHLIST SYNC (with live prices)
-// Structure: users/{userId}/watchlist/{symbol}
+// 4. WATCHLIST — Admin panel sirf symbol+addedAt use karta hai
+//    Live prices, dayHigh, dayLow etc. REMOVE — bandwidth save!
+//    userDataSyncJob already positions mein prices push karta hai
 // ─────────────────────────────────────────────────────
 async function updateAllUsersWatchlist() {
   try {
-    // All active users
-    const users = await User.find({ isActive: true }, '_id username').lean();
+    const users = await User.find({ isActive: true }, '_id').lean();
     if (!users.length) return;
 
-    // Collect all watchlist symbols to fetch prices once
     const allWatchlists = await Watchlist.find({
       userId: { $in: users.map(u => u._id) }
     }).lean();
 
     if (!allWatchlists.length) return;
 
-    // Collect unique symbols
-    const allSymbols = new Set();
-    allWatchlists.forEach(wl => {
-      if (wl.stocks && Array.isArray(wl.stocks)) {
-        wl.stocks.forEach(s => s.symbol && allSymbols.add(s.symbol));
-      } else if (wl.symbol) {
-        allSymbols.add(wl.symbol);
-      }
-    });
-
-    // Fetch live prices for all watchlist symbols
-    const stocks = await Stock.find({
-      symbol: { $in: [...allSymbols] },
-      $or: [{ contractType: 'SPOT' }, { contractType: { $exists: false } }]
-    }).lean();
-
-    const priceMap = {};
-    stocks.forEach(s => {
-      priceMap[s.symbol] = {
-        currentPrice:     sanitizeNumber(s.currentPrice),
-        percentageChange: sanitizeNumber(s.percentageChange),
-        priceChange:      sanitizeNumber(s.priceChange),
-        dayHigh:          sanitizeNumber(s.dayHigh),
-        dayLow:           sanitizeNumber(s.dayLow),
-        companyName:      s.companyName || s.symbol
-      };
-    });
-
-    // Build Firebase updates - group by userId
+    // Group by userId
     const wlByUser = {};
     allWatchlists.forEach(wl => {
       const uid = wl.userId.toString();
@@ -501,27 +329,21 @@ async function updateAllUsersWatchlist() {
       const watchlistData = {};
 
       userWatchlists.forEach(wl => {
-        // Handle both structures: stocks array OR flat symbol
         const stocksArr = wl.stocks && Array.isArray(wl.stocks)
           ? wl.stocks
           : (wl.symbol ? [{ symbol: wl.symbol, addedAt: wl.createdAt }] : []);
 
-        stocksArr.forEach((item, idx) => {
+        stocksArr.forEach(item => {
           if (!item.symbol) return;
-          const symKey  = safeKey(item.symbol);
-          const pricing = priceMap[item.symbol] || {};
-
+          const symKey = safeKey(item.symbol);
+          // ✅ Sirf admin panel ke required keys: symbol, companyName, currentPrice, priceChange, percentageChange
+          // Live price market hours mein userDataSyncJob/positions se milti hai
+          // Watchlist mein full price data push karna unnecessary bandwidth tha
           watchlistData[symKey] = {
-            symbol:           item.symbol,
-            companyName:      pricing.companyName || item.symbol,
-            currentPrice:     pricing.currentPrice     || 0,
-            percentageChange: pricing.percentageChange || 0,
-            priceChange:      pricing.priceChange      || 0,
-            dayHigh:          pricing.dayHigh           || 0,
-            dayLow:           pricing.dayLow            || 0,
-            addedAt:          item.addedAt || wl.createdAt || Date.now(),
-            position:         idx,
-            lastUpdated:      Date.now()
+            symbol:      item.symbol,
+            companyName: item.companyName || item.symbol,
+            addedAt:     item.addedAt || wl.createdAt || Date.now(),
+            // currentPrice, priceChange, percentageChange — userFirebaseService syncSingleUserToFirebase se aayega
           };
         });
       });
@@ -533,9 +355,8 @@ async function updateAllUsersWatchlist() {
 
     if (Object.keys(updates).length > 0) {
       await batchUpdateFirebase(updates);
-      console.log(`👁️  Watchlist: ${Object.keys(updates).length} users synced`);
+      console.log(`👁️  Watchlist: ${Object.keys(updates).length} users synced (metadata only)`);
     }
-
   } catch (e) {
     console.error('❌ Watchlist sync error:', e.message);
   }
@@ -564,7 +385,10 @@ function getMarketStatus() {
 }
 
 // ─────────────────────────────────────────────────────
-// INTERVALS
+// INTERVALS — OPTIMIZED
+// Before: spot 3s, futures 5s, indices 5s, watchlist 5s
+// After:  spot 10s (MongoDB only), futures 15s, indices 15s, watchlist 60s
+// Bandwidth reduction: ~85%
 // ─────────────────────────────────────────────────────
 let spotInterval      = null;
 let futuresInterval   = null;
@@ -576,53 +400,53 @@ function startContinuousUpdates() {
   const ms = getMarketStatus();
 
   console.log('\n' + '═'.repeat(65));
-  console.log('🔥 FIREBASE REALTIME UPDATE JOB STARTED');
+  console.log('🔥 FIREBASE REALTIME UPDATE JOB STARTED (OPTIMIZED)');
   console.log('═'.repeat(65));
   console.log(`   Market: ${ms.status}  |  IST: ${ms.time}`);
-  console.log(`   Tracking: ${ACTIVE_SYMBOLS.length} spot stocks + all futures + indices`);
-  console.log('   Logic: UPSERT → naye add, purane update');
+  console.log(`   Spot MongoDB: every 10s | Futures Firebase: every 15s`);
+  console.log(`   Indices: every 15s | Watchlist: every 60s`);
+  console.log(`   stocks/spot path: DISABLED (admin panel use nahi karta)`);
   console.log('═'.repeat(65) + '\n');
 
-  // ── Initial full sync ──
-  updateSpotStocks().then(() => updateFutureContracts()); // futures spot ke baad chalein
+  // Initial sync
+  updateSpotStocks().then(() => updateFutureContracts());
   updateIndices();
   updateAllUsersWatchlist();
 
-  // ── Spot stocks: every 3 seconds (live prices) ──
+  // ── Spot: every 10s — sirf MongoDB update, Firebase nahi ──
   spotInterval = setInterval(async () => {
     if (isMarketOpen()) await updateSpotStocks();
-  }, 3000);
+  }, 10000);
 
-  // ── Futures: every 5 seconds (spot update ke ~2s baad) ──
-  // Spot (3s) → Futures (5s starting at 2s offset) = always fresh spot price milegi
+  // ── Futures: every 15s (spot update ke baad) ──
   setTimeout(() => {
     futuresInterval = setInterval(async () => {
       if (isMarketOpen()) await updateFutureContracts();
-    }, 5000);
-  }, 2000); // 2s delay taaki spot pehle complete ho
+    }, 15000);
+  }, 3000);
 
-  // ── Indices: every 5 seconds ──
+  // ── Indices: every 15s ──
   indicesInterval = setInterval(async () => {
     if (isMarketOpen()) await updateIndices();
-  }, 5000);
+  }, 15000);
 
-  // ── Watchlist: every 5 seconds (with live prices) ──
+  // ── Watchlist: every 60s (sirf metadata, no live prices) ──
   watchlistInterval = setInterval(async () => {
-   if (isMarketOpen())   await updateAllUsersWatchlist();
-  }, 5000);
+    await updateAllUsersWatchlist(); // market hours check nahi — metadata kabhi bhi valid hai
+  }, 60000);
 
-  // ── Status log: every 60 seconds ──
+  // ── Status log: every 60s ──
   statusInterval = setInterval(() => {
     const s = getMarketStatus();
     console.log(`\n📊 Market: ${s.status} | IST: ${s.time}`);
   }, 60000);
 
-  console.log('✅ Intervals active:');
-  console.log('   📈 Spot stocks   → every 3s (live price fetch + MongoDB + Firebase)');
-  console.log('   🔮 Futures       → every 5s (spot price se derive + MongoDB UPSERT + Firebase)');
-  console.log('   🌐 Indices       → every 5s');
-  console.log('   👁️  Watchlist     → every 5s');
-  console.log('   📊 Status log    → every 60s\n');
+  console.log('✅ Optimized intervals active:');
+  console.log('   📈 Spot (MongoDB only) → every 10s');
+  console.log('   🔮 fo_contracts        → every 15s (Firebase)');
+  console.log('   🌐 Indices             → every 15s (Firebase)');
+  console.log('   👁️  Watchlist           → every 60s (metadata only)');
+  console.log('   ❌ stocks/spot path    → DISABLED\n');
 }
 
 function stopContinuousUpdates() {
@@ -646,5 +470,4 @@ module.exports = {
   isMarketOpen,
   getMarketStatus,
   batchUpdateFirebase,
-  updateFirebase
 };

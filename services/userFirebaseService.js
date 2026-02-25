@@ -73,8 +73,6 @@ function calcLiquidationPrice(pos,bal) {
 //     : entry + marginPerUnit;
 // console.log(raw)
 //   return parseFloat(Math.max(0, raw).toFixed(2));
-console.log(bal,"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-console.log(pos,bal)
  const entryPrice=pos.entryPrice;
    const qty=   pos.quantity;
     const  walletBalance=Number(bal)+Number(pos.marginUsed);        // walletBalance = margin blocked for pos position
@@ -87,8 +85,7 @@ if (qty <= 0) return 0;
   const denom = qty * (1 - MAINTENANCE_MARGIN_RATES);
   if (denom <= 0) return 0;
   const liqCross = (notional - walletBalance) / denom;
-  console.log(notional,walletBalance,lev,denom)
-  // Fallback: isolated-margin formula if cross result is illogical
+    // Fallback: isolated-margin formula if cross result is illogical
   if (liqCross >= entryPrice) {
     return Math.max(0.01, entryPrice * (1 - 1 / lev + MAINTENANCE_MARGIN_RATES));
   }
@@ -216,13 +213,45 @@ async function syncSingleUserToFirebase(userId) {
     // ── Watchlist ──
     const wlItems = await Watchlist.find({ userId }).lean();
     const watchlistData = {};
+    const wlSymbols = [];
+    wlItems.forEach(item => {
+      if (item.stocks && Array.isArray(item.stocks)) {
+        item.stocks.forEach(s => { if (s.symbol) wlSymbols.push(s.symbol); });
+      } else if (item.symbol) {
+        wlSymbols.push(item.symbol);
+      }
+    });
+    // Fetch live prices for watchlist symbols (admin panel requires currentPrice, priceChange, percentageChange)
+    const wlStocks = await Stock.find({ symbol: { $in: wlSymbols } }).lean();
+    const wlPriceMap = {};
+    wlStocks.forEach(s => { wlPriceMap[s.symbol] = s; });
+
     wlItems.forEach(item => {
       if (item.stocks && Array.isArray(item.stocks)) {
         item.stocks.forEach(s => {
-          watchlistData[s.symbol] = { symbol: s.symbol, addedAt: s.addedAt || item.createdAt, lastUpdated: Date.now() };
+          if (!s.symbol) return;
+          const sp = wlPriceMap[s.symbol] || {};
+          watchlistData[s.symbol] = {
+            symbol:           s.symbol,
+            companyName:      sp.companyName || s.symbol,
+            currentPrice:     parseFloat(sp.currentPrice || 0),
+            priceChange:      parseFloat(sp.priceChange || 0),
+            percentageChange: parseFloat(sp.percentageChange || 0),
+            addedAt:          s.addedAt || item.createdAt,
+            lastUpdated:      Date.now()
+          };
         });
       } else if (item.symbol) {
-        watchlistData[item.symbol] = { symbol: item.symbol, addedAt: item.createdAt, lastUpdated: Date.now() };
+        const sp = wlPriceMap[item.symbol] || {};
+        watchlistData[item.symbol] = {
+          symbol:           item.symbol,
+          companyName:      sp.companyName || item.symbol,
+          currentPrice:     parseFloat(sp.currentPrice || 0),
+          priceChange:      parseFloat(sp.priceChange || 0),
+          percentageChange: parseFloat(sp.percentageChange || 0),
+          addedAt:          item.createdAt,
+          lastUpdated:      Date.now()
+        };
       }
     });
 
