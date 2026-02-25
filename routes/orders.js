@@ -4,6 +4,7 @@ const router   = express.Router();
 const Order    = require('../models/Order');
 const User     = require('../models/User');
 const Stock    = require('../models/Stock');
+const Index    = require('../models/Index');
 const Position = require('../models/Position');
 const auth     = require('../middleware/auth');
 const { syncSingleUserToFirebase } = require('../services/userFirebaseService');
@@ -69,15 +70,40 @@ router.post('/place', auth, async (req, res) => {
       if (TYPE === 'SELL' && +takeProfit >= +price) return res.status(400).json({ success: false, message: 'TP (SELL) must be BELOW entry price' });
     }
 
-    const [user, stockData] = await Promise.all([
+    const [user, stockDoc, indexDoc] = await Promise.all([
       User.findById(req.user.userId),
-      Stock.findOne({ symbol: symbol.toUpperCase() })
+      Stock.findOne({ symbol: symbol.toUpperCase() }),
+      Index.findOne({ name: symbol.toUpperCase() })
     ]);
 
-    if (!user || !user.isActive) return res.status(404).json({ success: false, message: 'User not found or inactive' });
-    if (!stockData)              return res.status(404).json({ success: false, message: `Stock '${symbol}' not found` });
-    if (stockData.expiryDate && new Date(stockData.expiryDate) < new Date())
+    if (!user || !user.isActive) {
+      return res.status(404).json({ success: false, message: 'User not found or inactive' });
+    }
+
+    // Support indices (e.g. NIFTY 50) via Index model fallback
+    let stockData = stockDoc;
+    let isIndexInstrument = false;
+
+    if (!stockData && indexDoc) {
+      isIndexInstrument = true;
+      stockData = {
+        companyName: indexDoc.displayName || indexDoc.name,
+        currentPrice: indexDoc.value,
+        expiryDate: null,
+        expiryMonth: null,
+        strikePrice: null,
+        lotSize: lotSize || 1
+      };
+    }
+
+    if (!stockData) {
+      return res.status(404).json({ success: false, message: `Instrument '${symbol}' not found` });
+    }
+
+    // Expiry validation only for derivative contracts coming from Stock collection
+    if (!isIndexInstrument && stockData.expiryDate && new Date(stockData.expiryDate) < new Date()) {
       return res.status(400).json({ success: false, message: 'Contract expired' });
+    }
 
     const order = new Order({
       userId: user._id, symbol: symbol.toUpperCase(),

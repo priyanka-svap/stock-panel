@@ -13,6 +13,7 @@ const Transaction = require('../models/Transaction');
 const Watchlist = require('../models/Watchlist');
 const { adminAuth, checkPermission, requireSuperAdmin } = require('../middleware/adminAuth');
 const { updateStockPrice, updateIndexPrice } = require('../services/liveDataService');
+const { syncSingleUserToFirebase } = require('../services/userFirebaseService');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
@@ -1000,6 +1001,92 @@ router.get('/positions', adminAuth, checkPermission('canViewAnalytics'), async (
     });
   }
 });
+
+// Close User Position (Admin)
+router.post(
+  '/positions/:positionId/close',
+  adminAuth,
+  checkPermission('canManageOrders'),
+  async (req, res) => {
+    try {
+      const position = await Position.findOne({
+        _id: req.params.positionId,
+        isActive: true
+      });
+      
+      if (!position) {
+        return res.status(404).json({
+          success: false,
+          message: 'Active position not found'
+        });
+      }
+      
+      const user = await User.findById(position.userId);
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found for this position'
+        });
+      }
+      
+      const stock = await Stock.findOne({ symbol: position.symbol });
+      const exitPrice = req.body.exitPrice
+        ? parseFloat(req.body.exitPrice)
+        : (stock ? parseFloat(stock.currentPrice) : position.currentPrice);
+      
+      const exitBrokerage = user.calculateBrokerage
+        ? user.calculateBrokerage(position.quantity * exitPrice, position.quantity)
+        : 0;
+      
+      const marginToRelease = position.marginUsed || 0;
+      
+      position.close(exitPrice, exitBrokerage, 'MANUAL');
+      await position.save();
+      
+      if (marginToRelease > 0 && typeof user.releaseMargin === 'function') {
+        user.releaseMargin(marginToRelease);
+      }
+      
+      const realizedPnL = position.realizedPnL || position.pnl || 0;
+      
+      user.availableBalance += realizedPnL;
+      user.availableBalance -= exitBrokerage;
+      user.totalPnL = (user.totalPnL || 0) + realizedPnL;
+      user.todayPnL = (user.todayPnL || 0) + realizedPnL;
+      user.totalBrokeragePaid = (user.totalBrokeragePaid || 0) + exitBrokerage;
+      await user.save();
+      
+      if (typeof syncSingleUserToFirebase === 'function') {
+        syncSingleUserToFirebase(user._id.toString()).catch(console.error);
+      }
+      
+      res.json({
+        success: true,
+        message: 'Position closed successfully by admin',
+        data: {
+          position,
+          exitPrice,
+          realizedPnL: parseFloat(realizedPnL.toFixed(2)),
+          exitBrokerage: parseFloat(exitBrokerage.toFixed(2))
+        },
+        userBalance: {
+          availableBalance: user.availableBalance,
+          usedMargin: user.usedMargin,
+          availableMargin: user.availableMargin,
+          totalMargin: user.totalMargin,
+          remainingMargin: user.remainingMargin,
+          totalPnL: user.totalPnL
+        }
+      });
+    } catch (error) {
+      console.error('Admin close position error:', error);
+      res.status(500).json({
+        success: false,
+        message: error.message
+      });
+    }
+  }
+);
 
 // Get All Watchlists (Summary)
 router.get('/watchlists', adminAuth, checkPermission('canViewAnalytics'), async (req, res) => {
