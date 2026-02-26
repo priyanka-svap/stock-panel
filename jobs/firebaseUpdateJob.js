@@ -113,14 +113,16 @@ async function updateSpotStocks() {
 // ─────────────────────────────────────────────────────
 async function refreshFuturePricesFromSpot() {
   try {
-    const now = new Date();
+    const now      = new Date();
+    // ✅ FIX: nowDate aur in30Days pehle undefined the — ab properly define kiye
+    const in30Days = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
     const futures = await Stock.find({
       contractType: { $in: ['FUTURE', 'FUTURES'] },
       isActive: true,
       $or: [
-       // { expiryDate: { $gt: now } },
-      { expiryDate: { $gte: nowDate, $lte: in30Days }},
-        { expiryDate: null }
+        { expiryDate: { $gte: now, $lte: in30Days } }, // ✅ Valid contracts (next 30 days)
+        { expiryDate: null }                            // No expiry contracts
       ]
     }).lean();
 
@@ -231,7 +233,15 @@ async function updateFutureContracts() {
         isExpired        = diffMs < 0;
       }
 
-      if (isExpired) { expiredCount++; return; }
+      if (isExpired) {
+        expiredCount++;
+        // ✅ FIX: Firebase se bhi hatao — PATCH mein null = DELETE
+        // Pehle sirf return karta tha, isliye purane expired contracts Firebase mein rehte the
+        if (existingFoKeys[key]) {
+          updates[`fo_contracts/${key}`] = null;
+        }
+        return;
+      }
 
       const isNew = !existingFoKeys[key];
       if (isNew) newCount++; else updateCount++;

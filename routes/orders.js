@@ -70,10 +70,21 @@ router.post('/place', auth, async (req, res) => {
       if (TYPE === 'SELL' && +takeProfit >= +price) return res.status(400).json({ success: false, message: 'TP (SELL) must be BELOW entry price' });
     }
 
+    // ✅ FIX: Index lookup — exact match + regex + displayName fallback
+    // "NIFTY 50", "Nifty 50", "NIFTY_50" sab match hoga
+    const symbolUpper   = symbol.toUpperCase();
+    const symbolRegex   = new RegExp('^' + symbol.trim().replace(/[\s_]+/g, '[\\s_]*') + '$', 'i');
+
     const [user, stockDoc, indexDoc] = await Promise.all([
       User.findById(req.user.userId),
-      Stock.findOne({ symbol: symbol.toUpperCase() }),
-      Index.findOne({ name: symbol.toUpperCase() })
+      Stock.findOne({ symbol: symbolUpper }),
+      Index.findOne({
+        $or: [
+          { name:        symbolUpper },
+          { name:        symbolRegex },
+          { displayName: symbolRegex }
+        ]
+      })
     ]);
 
     if (!user || !user.isActive) {
