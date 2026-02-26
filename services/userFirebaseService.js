@@ -130,7 +130,7 @@ function calcBalanceFields(user) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// syncSingleUserToFirebase
+// syncSingleUserToFirebase (IMMEDIATE)
 // ─────────────────────────────────────────────────────────────────────────────
 async function syncSingleUserToFirebase(userId) {
   try {
@@ -297,6 +297,34 @@ async function syncSingleUserToFirebase(userId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// scheduleUserFirebaseSync (DEBOUNCED PER USER)
+//   - High-frequency actions ke liye (orders, positions, hooks)
+//   - Har userId ke liye 1 active timer rakhta hai
+//   - Multiple calls within window → sirf 1 actual sync
+// ─────────────────────────────────────────────────────────────────────────────
+const _pendingUserSyncs = new Map();
+const DEFAULT_SYNC_DELAY_MS = 1000; // adjust karo agar aur kam/lamba interval chahiye
+
+function scheduleUserFirebaseSync(userId, delayMs = DEFAULT_SYNC_DELAY_MS) {
+  if (!userId) return;
+  const uid = userId.toString();
+
+  // Agar already timer laga hua hai, dobara mat lagao
+  if (_pendingUserSyncs.has(uid)) return;
+
+  const timer = setTimeout(async () => {
+    _pendingUserSyncs.delete(uid);
+    try {
+      await syncSingleUserToFirebase(uid);
+    } catch (e) {
+      console.error('Scheduled Firebase sync error:', e.message);
+    }
+  }, delayMs);
+
+  _pendingUserSyncs.set(uid, timer);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // syncAllUsersToFirebase
 // ─────────────────────────────────────────────────────────────────────────────
 async function syncAllUsersToFirebase() {
@@ -316,6 +344,7 @@ module.exports = {
   syncAllUsersToFirebase,
   calcLiquidationPrice,   // ✅ exported — userDataSyncJob uses this
   calcBalanceFields,      // ✅ exported — userDataSyncJob uses this
+  scheduleUserFirebaseSync,
   _fbPatch,
   _fbPut
 };

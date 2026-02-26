@@ -8,7 +8,7 @@ const Position = require('../models/Position');
 const Stock    = require('../models/Stock');
 const User     = require('../models/User');
 const Order    = require('../models/Order');
-const { syncSingleUserToFirebase } = require('../services/userFirebaseService');
+const { scheduleUserFirebaseSync } = require('../services/userFirebaseService');
 
 let monitorInterval = null;
 
@@ -136,7 +136,7 @@ async function monitorSLTP() {
       exitOrder.netAmount        = exitBrok + exitOrder.taxesAndCharges;
       await exitOrder.save();
 
-      await syncSingleUserToFirebase(user._id.toString());
+      scheduleUserFirebaseSync(user._id.toString());
 
       console.log(`   ✅ Position closed | realizedPnL: ₹${position.realizedPnL.toFixed(2)}`);
     }

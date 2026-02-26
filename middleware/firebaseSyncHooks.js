@@ -1,13 +1,13 @@
 // middleware/firebaseSyncHooks.js
 // ✅ FIX: userFirebaseService plain object export hai — new() nahi karna
 // ✅ FIX: console.log(req) remove (bandwidth + security issue tha)
-// ✅ Sirf syncSingleUserToFirebase use karo — sab data ek call mein push hota hai
+// ✅ Sirf scheduleUserFirebaseSync use karo — sab data ek debounced call mein push hota hai
 
-const { syncSingleUserToFirebase } = require('../services/userFirebaseService');
+const { scheduleUserFirebaseSync } = require('../services/userFirebaseService');
 
 async function onWatchlistChange(userId) {
   try {
-    await syncSingleUserToFirebase(userId.toString());
+    scheduleUserFirebaseSync(userId.toString());
   } catch (error) {
     console.error('Watchlist sync hook error:', error.message);
   }
@@ -15,7 +15,7 @@ async function onWatchlistChange(userId) {
 
 async function onOrderChange(userId) {
   try {
-    await syncSingleUserToFirebase(userId.toString());
+    scheduleUserFirebaseSync(userId.toString());
   } catch (error) {
     console.error('Order sync hook error:', error.message);
   }
@@ -23,7 +23,7 @@ async function onOrderChange(userId) {
 
 async function onHoldingChange(userId) {
   try {
-    await syncSingleUserToFirebase(userId.toString());
+    scheduleUserFirebaseSync(userId.toString());
   } catch (error) {
     console.error('Holding sync hook error:', error.message);
   }
@@ -31,7 +31,7 @@ async function onHoldingChange(userId) {
 
 async function onPositionChange(userId) {
   try {
-    await syncSingleUserToFirebase(userId.toString());
+    scheduleUserFirebaseSync(userId.toString());
   } catch (error) {
     console.error('Position sync hook error:', error.message);
   }
@@ -39,7 +39,7 @@ async function onPositionChange(userId) {
 
 async function onUserProfileChange(userId) {
   try {
-    await syncSingleUserToFirebase(userId.toString());
+    scheduleUserFirebaseSync(userId.toString());
   } catch (error) {
     console.error('Profile sync hook error:', error.message);
   }
@@ -55,10 +55,8 @@ function autoSyncMiddleware(syncType) {
 
       if (data && data.success && req.user && req.user.userId) {
         const userId = req.user.userId;
-        // All sync types now use syncSingleUserToFirebase — consistent + fewer Firebase calls
-        syncSingleUserToFirebase(userId.toString()).catch(err =>
-          console.error(`[autoSyncMiddleware:${syncType}] sync error:`, err.message)
-        );
+        // All sync types now use debounced scheduleUserFirebaseSync — fewer Firebase writes
+        scheduleUserFirebaseSync(userId.toString());
       }
     };
 

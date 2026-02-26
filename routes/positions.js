@@ -325,7 +325,7 @@ const Position = require('../models/Position');
 const Stock    = require('../models/Stock');
 const User     = require('../models/User');
 const auth     = require('../middleware/auth');
-const { syncSingleUserToFirebase } = require('../services/userFirebaseService');
+const { scheduleUserFirebaseSync } = require('../services/userFirebaseService');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/positions  — all open positions for logged-in user
@@ -548,7 +548,7 @@ router.post('/open', auth, async (req, res) => {
     user.useMargin(marginUsed);
     await user.save();
 
-    syncSingleUserToFirebase(user._id.toString()).catch(console.error);
+    scheduleUserFirebaseSync(user._id.toString());
 
     res.json({
       success: true,
@@ -600,7 +600,7 @@ router.post('/close/:id', auth, async (req, res) => {
     user.totalBrokeragePaid  = (user.totalBrokeragePaid || 0) + exitBrok;
     await user.save();
 
-    syncSingleUserToFirebase(user._id.toString()).catch(console.error);
+    scheduleUserFirebaseSync(user._id.toString());
 
     res.json({
       success: true,
@@ -673,8 +673,8 @@ router.patch('/:id/sltp', auth, async (req, res) => {
 
     await pos.save();
 
-    // Push updated SL/TP to Firebase immediately
-    syncSingleUserToFirebase(req.user.userId.toString()).catch(console.error);
+    // Push updated SL/TP to Firebase (debounced per user)
+    scheduleUserFirebaseSync(req.user.userId.toString());
 
     res.json({
       success: true,
@@ -751,7 +751,7 @@ router.patch('/:id/targets', auth, async (req, res) => {
     }
 
     await pos.save();
-    syncSingleUserToFirebase(req.user.userId.toString()).catch(console.error);
+    scheduleUserFirebaseSync(req.user.userId.toString());
 
     res.json({ success: true, message: 'Position updated', data: pos });
   } catch (e) {

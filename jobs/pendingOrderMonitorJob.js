@@ -11,7 +11,7 @@ const Order    = require('../models/Order');
 const Stock    = require('../models/Stock');
 const User     = require('../models/User');
 const Position = require('../models/Position');
-const { syncSingleUserToFirebase } = require('../services/userFirebaseService');
+const { scheduleUserFirebaseSync } = require('../services/userFirebaseService');
 
 let monitorInterval = null;
 
@@ -261,7 +261,7 @@ async function monitorPendingOrders() {
         console.log(`   Trigger: ₹${order.limitPrice} | Market: ₹${currentPrice} | Exec: ₹${execPrice}`);
 
         await executePendingOrder(order, user, execPrice);
-        await syncSingleUserToFirebase(user._id.toString());
+        scheduleUserFirebaseSync(user._id.toString());
         console.log(`   ✅ Executed: ${order.symbol} @ ₹${execPrice}`);
 
       } catch (execErr) {

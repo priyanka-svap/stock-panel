@@ -7,7 +7,7 @@ const Stock    = require('../models/Stock');
 const Index    = require('../models/Index');
 const Position = require('../models/Position');
 const auth     = require('../middleware/auth');
-const { syncSingleUserToFirebase } = require('../services/userFirebaseService');
+const { scheduleUserFirebaseSync } = require('../services/userFirebaseService');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/orders
@@ -148,7 +148,7 @@ router.post('/place', auth, async (req, res) => {
       await _executeOrder(order, user, parseFloat(price));
     }
 
-    syncSingleUserToFirebase(user._id.toString()).catch(console.error);
+    scheduleUserFirebaseSync(user._id.toString());
 
     return res.status(201).json({
       success: true,
@@ -243,7 +243,7 @@ router.patch('/:orderId/edit', auth, async (req, res) => {
     }
 
     await user.save();
-    syncSingleUserToFirebase(user._id.toString()).catch(console.error);
+    scheduleUserFirebaseSync(user._id.toString());
 
     order.updatedAt = new Date();
     await order.save();
@@ -276,7 +276,7 @@ router.patch('/:orderId/cancel', auth, async (req, res) => {
       user.availableBalance   += order.brokerage;
       user.totalBrokeragePaid  = Math.max(0, (user.totalBrokeragePaid || 0) - order.brokerage);
       await user.save();
-      syncSingleUserToFirebase(user._id.toString()).catch(console.error);
+      scheduleUserFirebaseSync(user._id.toString());
     }
 
     res.json({ success: true, message: 'Order cancelled', data: order });
@@ -318,7 +318,7 @@ router.post('/close-position/:positionId', auth, async (req, res) => {
     user.totalBrokeragePaid += exitBrok;
     await user.save();
 
-    syncSingleUserToFirebase(user._id.toString()).catch(console.error);
+    scheduleUserFirebaseSync(user._id.toString());
 
     res.json({
       success: true,
