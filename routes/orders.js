@@ -102,7 +102,7 @@ router.post('/place', auth, async (req, res) => {
 
     // Expiry validation only for derivative contracts coming from Stock collection
     if (!isIndexInstrument && stockData.expiryDate && new Date(stockData.expiryDate) < new Date()) {
-      return res.status(400).json({ success: false, message: 'Contract expired' });
+      return res.status(200).json({ success: false, message: 'Contract expired' });
     }
 
     const order = new Order({
