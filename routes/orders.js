@@ -47,7 +47,7 @@ router.post('/place', auth, async (req, res) => {
       quantity, price, limitPrice,
       stopLoss, takeProfit, notes
     } = req.body;
-
+console.log(req.body);
     if (!symbol || !orderType || !quantity || !price)
       return res.status(400).json({ success: false, message: 'symbol, orderType, quantity, price required' });
 

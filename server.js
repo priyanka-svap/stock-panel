@@ -64,7 +64,7 @@ const { startPendingOrderMonitor }= require('./jobs/pendingOrderMonitorJob');
 // ──────────────────────────────────────────
 // DATABASE + START
 // ──────────────────────────────────────────
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/stockPanelDB')
+mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://svappriyankaladhani:Dvvx3tY2XWwhByH0@cluster0.imo5b3m.mongodb.net/stocksDB')
   .then(() => {
     console.log('✅ MongoDB connected');
 
