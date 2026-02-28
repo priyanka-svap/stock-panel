@@ -1,7 +1,9 @@
 // // routes/stocks.js
 // const express = require('express');
 // const router = express.Router();
-// const Stock = require('../models/Stock');
+// const Stock     = require('../models/Stock');
+const Watchlist  = require('../models/Watchlist');
+const auth        = require('../middleware/auth');
 // const { updateStockPrice, updateMultipleStocks } = require('../services/liveDataService');
 
 // // Get all stocks with pagination and filters
@@ -88,7 +90,7 @@
 // routes/stocks.js - Stock Routes with Futures Support
 const express = require('express');
 const router = express.Router();
-const Stock = require('../models/Stock');
+const Stock     = require('../models/Stock');
 
 // =====================================================
 // SPOT STOCKS ROUTES
@@ -151,15 +153,18 @@ router.get('/spot', async (req, res) => {
 
 /**
  * GET /api/stocks/spot/:symbol
- * Get a specific spot stock
+ * Get a specific spot stock — full data + isWatchlisted status
+ * Auth optional: if token present, isWatchlisted is accurate
  */
 router.get('/spot/:symbol', async (req, res) => {
   try {
+    const symbol = req.params.symbol.toUpperCase();
+
     const stock = await Stock.findOne({
-      symbol: req.params.symbol.toUpperCase(),
+      symbol,
       contractType: 'SPOT',
       isActive: true
-    });
+    }).lean();
 
     if (!stock) {
       return res.status(404).json({
@@ -168,9 +173,81 @@ router.get('/spot/:symbol', async (req, res) => {
       });
     }
 
+    // ── Ask / Bid auto-calculate if not stored ──
+    // (Fallback agar liveDataService ne abhi update nahi kiya)
+    let askPrice = parseFloat(stock.askPrice || 0);
+    let bidPrice = parseFloat(stock.bidPrice || 0);
+    let spread   = parseFloat(stock.spread   || 0);
+
+    if (askPrice === 0 && stock.currentPrice > 0) {
+      const cp    = parseFloat(stock.currentPrice);
+      const pct   = cp < 500 ? 0.0004 : cp < 5000 ? 0.000125 : 0.000075;
+      const half  = cp * pct;
+      const tick  = 0.05;
+      askPrice = parseFloat((Math.round((cp + half) / tick) * tick).toFixed(2));
+      bidPrice = parseFloat((Math.round((cp - half) / tick) * tick).toFixed(2));
+      spread   = parseFloat((askPrice - bidPrice).toFixed(2));
+    }
+
+    // ── isWatchlisted check (optional auth) ──
+    let isWatchlisted = false;
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const jwt     = require('jsonwebtoken');
+        const decoded = jwt.verify(
+          authHeader.split(' ')[1],
+          process.env.JWT_SECRET || 'your-secret-key'
+        );
+        const userId  = decoded.userId || decoded.id || decoded._id;
+        if (userId) {
+          const wl = await Watchlist.findOne({ userId }).lean();
+          if (wl && wl.stocks) {
+            isWatchlisted = wl.stocks.some(s => s.symbol === symbol);
+          }
+        }
+      }
+    } catch (_) {
+      // Token invalid / not present — isWatchlisted stays false
+    }
+
     res.json({
       success: true,
-      data: stock
+      data: {
+        // ── Identity ──
+        _id:              stock._id,
+        symbol:           stock.symbol,
+        companyName:      stock.companyName,
+        contractType:     stock.contractType,
+        exchange:         stock.exchange || 'NSE',
+        sector:           stock.sector   || '',
+        industry:         stock.industry || '',
+
+        // ── Price ──
+        currentPrice:     parseFloat(stock.currentPrice  || 0),
+        openPrice:        parseFloat(stock.openPrice     || 0),
+        previousClose:    parseFloat(stock.previousClose || 0),
+        dayHigh:          parseFloat(stock.dayHigh       || 0),
+        dayLow:           parseFloat(stock.dayLow        || 0),
+
+        // ── Change ──
+        priceChange:      parseFloat(stock.priceChange      || 0),
+        percentageChange: parseFloat(stock.percentageChange || 0),
+
+        // ── Order Book ──
+        askPrice,
+        bidPrice,
+        spread,
+
+        // ── Volume / OI ──
+        volume:           parseFloat(stock.volume       || 0),
+        openInterest:     parseFloat(stock.openInterest || 0),
+
+        // ── Status ──
+        isActive:         stock.isActive,
+        isWatchlisted,          // ✅ NEW — true/false based on logged-in user
+        lastUpdated:      stock.lastUpdated
+      }
     });
   } catch (error) {
     res.status(500).json({
@@ -608,26 +685,207 @@ router.get('/market/losers', async (req, res) => {
   }
 });
 
-// Search stocks
-router.get('/search/:query', async (req, res) => {
+/**
+ * GET /api/stocks/search?q=RELIANCE
+ * Full-featured search — symbol + companyName match
+ * Returns SPOT + NSE Futures + MCX contracts — sabhi ek saath
+ * Results sorted: exact match first, phir SPOT, phir Futures
+ *
+ * Query params:
+ *   q      — search term (symbol or company name) [required]
+ *   limit  — max results, default 20, max 50
+ *   type   — ALL | SPOT | FUTURE | MCX  (default: ALL)
+ */
+router.get('/search', async (req, res) => {
   try {
-    const query = req.params.query;
-    
-    const stocks = await Stock.find({
+    const { q = '', limit = 20, type = 'ALL' } = req.query;
+
+    const term = q.trim();
+    if (!term) {
+      return res.status(400).json({
+        success: false,
+        message: 'Search term "q" is required. e.g. /api/stocks/search?q=RELIANCE'
+      });
+    }
+
+    const maxLimit = Math.min(parseInt(limit) || 20, 50);
+
+    // ── Build query — $and to safely combine search + type filters ──
+    const typeUpper   = type.toUpperCase();
+    const searchMatch = {
       $or: [
-        { symbol: { $regex: query, $options: 'i' } },
-        { companyName: { $regex: query, $options: 'i' } }
-      ],
-      isActive: true
-    }).limit(10);
-    
-    res.json({ success: true, data: stocks });
+        { symbol:      { $regex: term, $options: 'i' } },
+        { companyName: { $regex: term, $options: 'i' } }
+      ]
+    };
+
+    let typeMatch;
+    if (typeUpper === 'SPOT') {
+      typeMatch = { contractType: 'SPOT', isActive: true };
+    } else if (typeUpper === 'FUTURE') {
+      typeMatch = { contractType: 'FUTURE', exchange: { $ne: 'MCX' }, expiryDate: { $gte: new Date() }, isActive: true };
+    } else if (typeUpper === 'MCX') {
+      typeMatch = { exchange: 'MCX', isActive: true };
+    } else {
+      // ALL — SPOT + active NSE/MCX futures, expired futures skip
+      typeMatch = {
+        isActive: true,
+        $or: [
+          { contractType: 'SPOT' },
+          { contractType: 'FUTURE', expiryDate: { $gte: new Date() } }
+        ]
+      };
+    }
+
+    // $and combines: search condition AND type condition — no $or conflict
+    const dbQuery = { $and: [ searchMatch, typeMatch ] };
+
+    // ── Fetch stocks ──
+    const stocks = await Stock.find(dbQuery)
+      .sort({ contractType: 1, expiryDate: 1, symbol: 1 })
+      .limit(maxLimit)
+      .lean();
+
+    if (!stocks.length) {
+      return res.json({
+        success: true,
+        query:   term,
+        total:   0,
+        data:    []
+      });
+    }
+
+    // ── isWatchlisted check (optional auth) ──
+    let watchlistedSet = new Set();
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const jwt     = require('jsonwebtoken');
+        const decoded = jwt.verify(
+          authHeader.split(' ')[1],
+          process.env.JWT_SECRET || 'your-secret-key'
+        );
+        const userId = decoded.userId || decoded.id || decoded._id;
+        if (userId) {
+          const wl = await Watchlist.findOne({ userId }).lean();
+          if (wl && wl.stocks) {
+            wl.stocks.forEach(s => watchlistedSet.add(s.symbol));
+          }
+        }
+      }
+    } catch (_) { /* token absent/invalid — isWatchlisted = false for all */ }
+
+    // ── Build response ──
+    const data = stocks.map(stock => {
+      const cp = parseFloat(stock.currentPrice || 0);
+
+      // Ask/Bid — use stored value or auto-calculate
+      let ask  = parseFloat(stock.askPrice || 0);
+      let bid  = parseFloat(stock.bidPrice || 0);
+      let sprd = parseFloat(stock.spread   || 0);
+      if (ask === 0 && cp > 0) {
+        const tick  = stock.exchange === 'MCX' ? 0.1 : 0.05;
+        const pct   = cp < 500 ? 0.0004 : cp < 5000 ? 0.000125 : 0.000075;
+        const half  = cp * pct;
+        ask  = parseFloat((Math.round((cp + half) / tick) * tick).toFixed(2));
+        bid  = parseFloat((Math.round((cp - half) / tick) * tick).toFixed(2));
+        sprd = parseFloat((ask - bid).toFixed(2));
+      }
+
+      // Exact symbol match ko top pe show karo
+      const isExact = stock.symbol.toUpperCase() === term.toUpperCase();
+
+      return {
+        // ── Identity ──
+        _id:              stock._id,
+        symbol:           stock.symbol,
+        companyName:      stock.companyName,
+        contractType:     stock.contractType,
+        exchange:         stock.exchange  || 'NSE',
+        sector:           stock.sector    || '',
+        industry:         stock.industry  || '',
+
+        // ── Price ──
+        currentPrice:     cp,
+        openPrice:        parseFloat(stock.openPrice     || 0),
+        previousClose:    parseFloat(stock.previousClose || 0),
+        dayHigh:          parseFloat(stock.dayHigh       || 0),
+        dayLow:           parseFloat(stock.dayLow        || 0),
+
+        // ── Change ──
+        priceChange:      parseFloat(stock.priceChange      || 0),
+        percentageChange: parseFloat(stock.percentageChange || 0),
+
+        // ── Order Book ──
+        askPrice:         ask,
+        bidPrice:         bid,
+        spread:           sprd,
+
+        // ── Volume / OI ──
+        volume:           parseFloat(stock.volume       || 0),
+        openInterest:     parseFloat(stock.openInterest || 0),
+
+        // ── Futures specific (null for SPOT) ──
+        baseSymbol:       stock.baseSymbol   || null,
+        expiryDate:       stock.expiryDate   || null,
+        expiryString:     stock.expiryString || null,
+        lotSize:          stock.lotSize      || null,
+        daysToExpiry:     stock.expiryDate
+          ? Math.max(0, Math.ceil((new Date(stock.expiryDate) - new Date()) / 86400000))
+          : null,
+
+        // ── Status ──
+        isActive:         stock.isActive,
+        isWatchlisted:    watchlistedSet.has(stock.symbol),  // ✅
+        isExactMatch:     isExact,                            // ✅ exact symbol match flag
+        lastUpdated:      stock.lastUpdated
+      };
+    });
+
+    // Sort: exact match first, then alphabetical
+    data.sort((a, b) => {
+      if (a.isExactMatch && !b.isExactMatch) return -1;
+      if (!a.isExactMatch && b.isExactMatch) return 1;
+      return a.symbol.localeCompare(b.symbol);
+    });
+
+    res.json({
+      success: true,
+      query:   term,
+      type:    typeUpper,
+      total:   data.length,
+      data
+    });
+
   } catch (error) {
     res.status(500).json({
       success: false,
       message: 'Error searching stocks',
-      error: error.message
+      error:   error.message
     });
+  }
+});
+
+// Keep old route for backward compatibility
+router.get('/search/:query', async (req, res) => {
+  req.query.q = req.params.query;
+  // Forward to new search handler logic
+  const q = req.params.query.trim();
+  if (!q) return res.status(400).json({ success: false, message: 'Query required' });
+
+  try {
+    const stocks = await Stock.find({
+      isActive: true,
+      $or: [
+        { symbol:      { $regex: q, $options: 'i' } },
+        { companyName: { $regex: q, $options: 'i' } }
+      ],
+      contractType: 'SPOT'
+    }).limit(10).lean();
+
+    res.json({ success: true, data: stocks });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 

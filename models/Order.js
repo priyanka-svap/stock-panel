@@ -39,7 +39,7 @@ const orderSchema = new mongoose.Schema({
   
   contractType: {
     type: String,
-    enum: ['SPOT', 'FUTURES', 'CE', 'PE'],
+    enum: ['SPOT', 'FUTURE', 'FUTURES', 'CE', 'PE'],
     default: 'SPOT'
   },
   
@@ -461,7 +461,7 @@ orderSchema.methods.calculateMargin = function(user) {
     this.marginPercent = marginPercent;
     this.marginRequired = contractValue * (marginPercent / 100);
     
-  } else if (this.contractType === 'FUTURES') {
+  } else if (this.contractType === 'FUTURES' || this.contractType === 'FUTURE') {
     this.marginPercent = marginPercent;
     this.marginRequired = contractValue * (marginPercent / 100);
     

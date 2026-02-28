@@ -226,9 +226,13 @@ const futureStocks = [
   'LODHA', 'RAYMOND', 'SIGNATURE', 'MACROTECH', 'KOLTEPATIL'
 ];
 
-// Remove duplicates
+// Remove duplicates from futureStocks
 const uniqueFutureStocks = [...new Set(futureStocks)];
 
+// ✅ FIX: futureStocks mein jo symbols hain but stockSymbols mein nahi —
+// unka spot price MongoDB mein exist nahi karta, isliye skip hote hain
+// Hum sirf wahi stocks ke futures banayenge jinke spot prices successfully fetch hue hain
+// (seedDatabase() mein dynamic filter hoga — see below)
 console.log(`\n📋 Total Future Stocks Configured: ${uniqueFutureStocks.length}\n`);
 
 // =====================================================
@@ -466,12 +470,19 @@ async function seedDatabase() {
     // ==========================================
     // SEED FUTURE CONTRACTS
     // ==========================================
-    console.log(`🔮 Creating future contracts for ${uniqueFutureStocks.length} stocks...`);
+    // ✅ FIX: Sirf wahi symbols ke futures banao jo MongoDB mein SPOT price ke saath exist karte hain
+    // futureStocks list mein extra symbols hain jo Yahoo se fetch nahi hue — unhe skip karo
+    const existingSpotSymbols = new Set(
+      (await Stock.find({ contractType: { $in: ['SPOT', null] } }, 'symbol').lean())
+        .map(s => s.symbol)
+    );
+    const effectiveFutureStocks = uniqueFutureStocks.filter(sym => existingSpotSymbols.has(sym));
+    console.log(`🔮 Creating futures for ${effectiveFutureStocks.length}/${uniqueFutureStocks.length} stocks (rest had no spot price)...`);
     let totalFutures = 0;
     let successCount = 0;
     let failCount = 0;
     
-    for (const symbol of uniqueFutureStocks) {
+    for (const symbol of effectiveFutureStocks) {
       try {
         const spotStock = await Stock.findOne({ 
           symbol, 
@@ -481,7 +492,7 @@ async function seedDatabase() {
           ]
         });
         
-        if (spotStock && isValidNumber(spotStock.currentPrice) && isValidNumber(spotStock.currentPrice) > 0) {
+        if (spotStock && isValidNumber(spotStock.currentPrice) && spotStock.currentPrice > 0) {
           const futureContracts = await createFutureContracts(symbol, spotStock.currentPrice);
           
           if (futureContracts.length > 0) {
@@ -560,23 +571,37 @@ async function seedDatabase() {
     // Add future contracts to Firebase
     futureContracts.forEach(contract => {
       if (isValidNumber(contract.currentPrice)) {
-        firebaseUpdates[`stocks/futures/${contract.symbol}`] = {
-          symbol: contract.symbol,
-          baseSymbol: contract.baseSymbol,
-          companyName: contract.companyName,
-          contractType: 'FUTURE',
-          expiryDate: contract.expiryDate ? contract.expiryDate.getTime() : null,
-          expiryString: contract.expiryString,
-          lotSize: contract.lotSize,
-          currentPrice: sanitizeNumber(contract.currentPrice, 0),
+        // Ask/Bid spread calculate karo
+        const _cp   = sanitizeNumber(contract.currentPrice, 0);
+        const _tick = 0.05;
+        const _pct  = _cp < 500 ? 0.0004 : _cp < 5000 ? 0.000125 : 0.000075;
+        const _half = _cp * _pct;
+        const _ask  = sanitizeNumber(Math.round((_cp + _half) / _tick) * _tick);
+        const _bid  = sanitizeNumber(Math.round((_cp - _half) / _tick) * _tick);
+        const _key  = contract.symbol.replace(/[.#$[\]/]/g, "_");
+        firebaseUpdates[`fo_contracts/${_key}`] = {
+          symbol:           contract.symbol,
+          baseSymbol:       contract.baseSymbol,
+          companyName:      contract.companyName,
+          contractType:     'FUTURE',
+          exchange:         'NSE',
+          expiryDate:       contract.expiryDate ? new Date(contract.expiryDate).toISOString().split('T')[0] : null,
+          expiryString:     contract.expiryString,
+          lotSize:          contract.lotSize,
+          currentPrice:     _cp,
           percentageChange: sanitizeNumber(contract.percentageChange, 0),
-          priceChange: sanitizeNumber(contract.priceChange, 0),
-          dayHigh: sanitizeNumber(contract.dayHigh, 0),
-          dayLow: sanitizeNumber(contract.dayLow, 0),
-          openPrice: sanitizeNumber(contract.openPrice, 0),
-          volume: sanitizeNumber(contract.volume, 0),
-          openInterest: sanitizeNumber(contract.openInterest, 0),
-          lastUpdated: Date.now()
+          priceChange:      sanitizeNumber(contract.priceChange, 0),
+          dayHigh:          sanitizeNumber(contract.dayHigh, 0),
+          dayLow:           sanitizeNumber(contract.dayLow, 0),
+          openPrice:        sanitizeNumber(contract.openPrice, 0),
+          previousClose:    sanitizeNumber(contract.previousClose, 0),
+          volume:           sanitizeNumber(contract.volume, 0),
+          openInterest:     sanitizeNumber(contract.openInterest, 0),
+          askPrice:         _ask,
+          bidPrice:         _bid,
+          spread:           sanitizeNumber(_ask - _bid, 0),
+          daysToExpiry:     contract.expiryDate ? Math.max(0, Math.ceil((new Date(contract.expiryDate) - new Date()) / 86400000)) : null,
+          lastUpdated:      Date.now()
         };
       }
     });
@@ -606,6 +631,116 @@ async function seedDatabase() {
     } else {
       console.log('⚠️  Firebase push failed (continuing anyway)\n');
     }
+    // ==========================================
+    // SEED MCX CONTRACTS 🥇
+    // Gold, Silver, Crude Oil, Base Metals
+    // ==========================================
+    console.log('\n🥇 Seeding MCX Contracts (Gold, Silver, Crude Oil, Metals)...');
+
+    const MCX_SEED = [
+      // Gold
+      { symbol: 'GOLD-MAR26',       base: 'GOLD',       name: 'Gold',            unit: '10g',    lotSize: 100,  basePrice: 89500,  sector: 'PRECIOUS_METAL' },
+      { symbol: 'GOLDM-MAR26',      base: 'GOLDM',      name: 'Gold Mini',       unit: '10g',    lotSize: 10,   basePrice: 89500,  sector: 'PRECIOUS_METAL' },
+      { symbol: 'GOLDPETAL-MAR26',  base: 'GOLDPETAL',  name: 'Gold Petal',      unit: '1g',     lotSize: 1,    basePrice: 8950,   sector: 'PRECIOUS_METAL' },
+      { symbol: 'SILVER-MAR26',     base: 'SILVER',     name: 'Silver',          unit: '1kg',    lotSize: 30,   basePrice: 102000, sector: 'PRECIOUS_METAL' },
+      { symbol: 'SILVERM-MAR26',    base: 'SILVERM',    name: 'Silver Mini',     unit: '1kg',    lotSize: 5,    basePrice: 102000, sector: 'PRECIOUS_METAL' },
+      { symbol: 'SILVERMIC-MAR26',  base: 'SILVERMIC',  name: 'Silver Micro',    unit: '1kg',    lotSize: 1,    basePrice: 102000, sector: 'PRECIOUS_METAL' },
+      // Energy
+      { symbol: 'CRUDEOIL-MAR26',   base: 'CRUDEOIL',   name: 'Crude Oil',       unit: 'BBL',    lotSize: 100,  basePrice: 6200,   sector: 'ENERGY' },
+      { symbol: 'CRUDEOILM-MAR26',  base: 'CRUDEOILM',  name: 'Crude Oil Mini',  unit: 'BBL',    lotSize: 10,   basePrice: 6200,   sector: 'ENERGY' },
+      { symbol: 'NATURALGAS-MAR26', base: 'NATURALGAS', name: 'Natural Gas',     unit: 'MMBTU',  lotSize: 1250, basePrice: 280,    sector: 'ENERGY' },
+      { symbol: 'NATURALGASM-MAR26',base: 'NATURALGASM',name: 'Natural Gas Mini',unit: 'MMBTU',  lotSize: 250,  basePrice: 280,    sector: 'ENERGY' },
+      // Base Metals
+      { symbol: 'COPPER-MAR26',     base: 'COPPER',     name: 'Copper',          unit: 'kg',     lotSize: 2500, basePrice: 845,    sector: 'BASE_METAL' },
+      { symbol: 'COPPERM-MAR26',    base: 'COPPERM',    name: 'Copper Mini',     unit: 'kg',     lotSize: 250,  basePrice: 845,    sector: 'BASE_METAL' },
+      { symbol: 'ZINC-MAR26',       base: 'ZINC',       name: 'Zinc',            unit: 'kg',     lotSize: 5000, basePrice: 265,    sector: 'BASE_METAL' },
+      { symbol: 'ZINCMINI-MAR26',   base: 'ZINCMINI',   name: 'Zinc Mini',       unit: 'kg',     lotSize: 1000, basePrice: 265,    sector: 'BASE_METAL' },
+      { symbol: 'LEAD-MAR26',       base: 'LEAD',       name: 'Lead',            unit: 'kg',     lotSize: 5000, basePrice: 185,    sector: 'BASE_METAL' },
+      { symbol: 'LEADMINI-MAR26',   base: 'LEADMINI',   name: 'Lead Mini',       unit: 'kg',     lotSize: 1000, basePrice: 185,    sector: 'BASE_METAL' },
+      { symbol: 'ALUMINIUM-MAR26',  base: 'ALUMINIUM',  name: 'Aluminium',       unit: 'kg',     lotSize: 5000, basePrice: 235,    sector: 'BASE_METAL' },
+      { symbol: 'ALUMINIUMM-MAR26', base: 'ALUMINIUMM', name: 'Aluminium Mini',  unit: 'kg',     lotSize: 1000, basePrice: 235,    sector: 'BASE_METAL' },
+      { symbol: 'NICKEL-MAR26',     base: 'NICKEL',     name: 'Nickel',          unit: 'kg',     lotSize: 1500, basePrice: 1425,   sector: 'BASE_METAL' },
+      { symbol: 'NICKELM-MAR26',    base: 'NICKELM',    name: 'Nickel Mini',     unit: 'kg',     lotSize: 100,  basePrice: 1425,   sector: 'BASE_METAL' },
+    ];
+
+    // MCX expiry — next 3 months
+    const mcxExpiries = [];
+    const mcxMonths = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+    for (let i = 1; i <= 3; i++) {
+      const d = new Date();
+      d.setMonth(d.getMonth() + i);
+      d.setDate(5); d.setHours(23, 55, 0, 0);
+      mcxExpiries.push({ date: d, str: `${mcxMonths[d.getMonth()]}${d.getFullYear().toString().slice(-2)}` });
+    }
+
+    const mcxContracts = [];
+    const mcxFirebaseUpdates = {};
+
+    for (const cfg of MCX_SEED) {
+      for (const exp of mcxExpiries) {
+        const sym          = `${cfg.base}-${exp.str}`;
+        const daysToExp    = Math.max(0, Math.ceil((exp.date - new Date()) / 86400000));
+        const premium      = cfg.basePrice * (daysToExp / 365) * 0.06;
+        const price        = parseFloat((cfg.basePrice + premium).toFixed(2));
+        const prevClose    = parseFloat((cfg.basePrice * 0.998).toFixed(2));
+        const priceChange  = parseFloat((price - prevClose).toFixed(2));
+        const pctChange    = parseFloat(((priceChange / prevClose) * 100).toFixed(2));
+
+        // MCX ask/bid (wider spread — 0.03%)
+        const mcxTick = 0.1;
+        const mcxHalf = price * 0.00015;
+        const mcxAsk  = parseFloat((Math.round((price + mcxHalf) / mcxTick) * mcxTick).toFixed(2));
+        const mcxBid  = parseFloat((Math.round((price - mcxHalf) / mcxTick) * mcxTick).toFixed(2));
+
+        mcxContracts.push({
+          symbol: sym, companyName: cfg.name, contractType: 'FUTURE',
+          exchange: 'MCX', baseSymbol: cfg.base,
+          expiryDate: exp.date, expiryString: exp.str,
+          lotSize: cfg.lotSize, currentPrice: price,
+          previousClose: prevClose, priceChange: priceChange,
+          percentageChange: pctChange,
+          dayHigh: parseFloat((price * 1.005).toFixed(2)),
+          dayLow:  parseFloat((price * 0.995).toFixed(2)),
+          openPrice: prevClose, volume: 0, openInterest: 0,
+          sector: cfg.sector, industry: 'COMMODITY', isActive: true
+        });
+
+        // Firebase push — mcx_contracts path
+        const fbKey = sym.replace(/[.#$[\]/]/g, '_');
+        mcxFirebaseUpdates[`mcx_contracts/${fbKey}`] = {
+          symbol: sym, displayName: cfg.name, exchange: 'MCX',
+          unit: cfg.unit, lotSize: cfg.lotSize,
+          currentPrice: price, priceChange: priceChange,
+          percentageChange: pctChange,
+          dayHigh: parseFloat((price * 1.005).toFixed(2)),
+          dayLow:  parseFloat((price * 0.995).toFixed(2)),
+          openPrice: prevClose, previousClose: prevClose,
+          volume: 0,
+          askPrice: mcxAsk, bidPrice: mcxBid,
+          spread: parseFloat((mcxAsk - mcxBid).toFixed(2)),
+          contractType: 'MCX_FUTURE', sector: cfg.sector,
+          daysToExpiry: daysToExp, lastUpdated: Date.now()
+        };
+      }
+    }
+
+    if (mcxContracts.length > 0) {
+      // Delete old MCX contracts and insert fresh
+      await Stock.deleteMany({ exchange: 'MCX' });
+      await Stock.insertMany(mcxContracts);
+      console.log(`✅ MCX MongoDB: ${mcxContracts.length} contracts seeded`);
+    }
+
+    // Firebase MCX push
+    if (Object.keys(mcxFirebaseUpdates).length > 0) {
+      const mcxFbOk = await batchUpdateFirebase(mcxFirebaseUpdates);
+      if (mcxFbOk) {
+        console.log(`✅ MCX Firebase: ${Object.keys(mcxFirebaseUpdates).length} contracts pushed to mcx_contracts`);
+      } else {
+        console.log('⚠️  MCX Firebase push failed');
+      }
+    }
+
     
     // ==========================================
     // CREATE DEMO USER
@@ -674,27 +809,29 @@ async function seedDatabase() {
     console.log('═'.repeat(90));
     
     // Statistics
-    const totalSpotStocks = await Stock.countDocuments({ contractType: 'SPOT' });
-    const totalFutureContracts = await Stock.countDocuments({ contractType: 'FUTURE' });
+    const totalSpotStocks     = await Stock.countDocuments({ contractType: 'SPOT' });
+    const totalNseFutures     = await Stock.countDocuments({ contractType: 'FUTURE', exchange: { $ne: 'MCX' } });
+    const totalMcxContracts   = await Stock.countDocuments({ contractType: 'FUTURE', exchange: 'MCX' });
     
-    // Group futures by base symbol
+    // Group NSE futures by base symbol
     const futuresByBase = await Stock.aggregate([
-      { $match: { contractType: 'FUTURE' } },
+      { $match: { contractType: 'FUTURE', exchange: { $ne: 'MCX' } } },
       { $group: { _id: '$baseSymbol', count: { $sum: 1 } } },
       { $sort: { count: -1 } }
     ]);
     
     console.log('\n📈 Database Statistics:');
     console.log('═'.repeat(90));
-    console.log(`   Spot Stocks:          ${totalSpotStocks}`);
-    console.log(`   Future Contracts:     ${totalFutureContracts}`);
-    console.log(`   Stocks with Futures:  ${futuresByBase.length}`);
-    console.log(`   Market Indices:       ${allIndices.length}`);
-    console.log(`   Total Instruments:    ${totalSpotStocks + totalFutureContracts}`);
+    console.log(`   Spot Stocks:                ${totalSpotStocks}`);
+    console.log(`   NSE F&O Contracts:          ${totalNseFutures}`);
+    console.log(`   MCX Contracts:              ${totalMcxContracts} (Gold/Silver/Crude/Metals)`);
+    console.log(`   Stocks with Futures:        ${futuresByBase.length}`);
+    console.log(`   Market Indices:             ${allIndices.length}`);
+    console.log(`   Total Instruments:          ${totalSpotStocks + totalNseFutures + totalMcxContracts}`);
     console.log('═'.repeat(90));
     
     console.log('\n✨ Database seeding completed!');
-    console.log('🔥 Firebase data synced!');
+    console.log('🔥 Firebase synced: fo_contracts (NSE) + mcx_contracts (MCX) + indices');
     console.log('💡 Start the server with: npm start\n');
     
     process.exit(0);

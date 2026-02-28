@@ -125,7 +125,25 @@ const stockSchema = new mongoose.Schema({
     set: v => sanitizeNumber(v, 0),  // ✅ NaN protection
     // Particularly relevant for futures
   },
-  
+
+  // ── Ask / Bid / Spread ──────────────────────────────
+  // Live order book prices — updated by firebaseUpdateJob
+  askPrice: {
+    type: Number,
+    default: 0,
+    set: v => sanitizeNumber(v, 0)
+  },
+  bidPrice: {
+    type: Number,
+    default: 0,
+    set: v => sanitizeNumber(v, 0)
+  },
+  spread: {
+    type: Number,
+    default: 0,
+    set: v => sanitizeNumber(v, 0)
+  },
+
   // Additional Information
   sector: {
     type: String,
@@ -177,7 +195,8 @@ stockSchema.pre('save', function(next) {
   // List of all number fields to validate
   const numberFields = [
     'currentPrice', 'openPrice', 'dayHigh', 'dayLow', 'previousClose',
-    'priceChange', 'percentageChange', 'volume', 'openInterest', 'lotSize'
+    'priceChange', 'percentageChange', 'volume', 'openInterest', 'lotSize',
+    'askPrice', 'bidPrice', 'spread'
   ];
   
   // Sanitize each field
@@ -198,7 +217,8 @@ stockSchema.pre('findOneAndUpdate', function(next) {
   if (update.$set) {
     const numberFields = [
       'currentPrice', 'openPrice', 'dayHigh', 'dayLow', 'previousClose',
-      'priceChange', 'percentageChange', 'volume', 'openInterest', 'lotSize'
+      'priceChange', 'percentageChange', 'volume', 'openInterest', 'lotSize',
+      'askPrice', 'bidPrice', 'spread'
     ];
     
     numberFields.forEach(field => {
@@ -218,7 +238,8 @@ stockSchema.pre('updateOne', function(next) {
   if (update.$set) {
     const numberFields = [
       'currentPrice', 'openPrice', 'dayHigh', 'dayLow', 'previousClose',
-      'priceChange', 'percentageChange', 'volume', 'openInterest', 'lotSize'
+      'priceChange', 'percentageChange', 'volume', 'openInterest', 'lotSize',
+      'askPrice', 'bidPrice', 'spread'
     ];
     
     numberFields.forEach(field => {
@@ -237,7 +258,8 @@ stockSchema.pre('updateMany', function(next) {
   if (update.$set) {
     const numberFields = [
       'currentPrice', 'openPrice', 'dayHigh', 'dayLow', 'previousClose',
-      'priceChange', 'percentageChange', 'volume', 'openInterest', 'lotSize'
+      'priceChange', 'percentageChange', 'volume', 'openInterest', 'lotSize',
+      'askPrice', 'bidPrice', 'spread'
     ];
     
     numberFields.forEach(field => {

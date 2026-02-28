@@ -3,6 +3,26 @@ const axios = require('axios');
 const Stock = require('../models/Stock');
 const Index = require('../models/Index');
 
+// ─────────────────────────────────────────────────────────
+// COMMODITY CONVERSION CONSTANTS
+// USD_TO_INR: Update this value or fetch live from FX API
+// ─────────────────────────────────────────────────────────
+const USD_TO_INR = 84.5;
+
+// Conversion functions: USD → INR in MCX units
+const MCX_CONVERSIONS = {
+  'GC=F': (usd) => parseFloat((usd * USD_TO_INR * 10   / 31.1035).toFixed(2)), // Gold: USD/oz → INR/10g
+  'SI=F': (usd) => parseFloat((usd * USD_TO_INR * 1000 / 31.1035).toFixed(2)), // Silver: USD/oz → INR/kg
+  'CL=F': (usd) => parseFloat((usd * USD_TO_INR).toFixed(2)),                   // Crude: USD/bbl → INR/bbl
+  'BZ=F': (usd) => parseFloat((usd * USD_TO_INR).toFixed(2)),                   // Brent: USD/bbl → INR/bbl
+  'NG=F': (usd) => parseFloat((usd * USD_TO_INR).toFixed(2)),                   // NatGas: USD/MMBTU → INR/MMBTU
+  'HG=F': (usd) => parseFloat((usd * USD_TO_INR / 0.453592).toFixed(2)),        // Copper: USD/lb → INR/kg
+  'ZNO=F':(usd) => parseFloat((usd * USD_TO_INR / 0.453592).toFixed(2)),        // Zinc: USD/lb → INR/kg
+  'LE=F': (usd) => parseFloat((usd * USD_TO_INR / 0.453592).toFixed(2)),        // Lead: USD/lb → INR/kg
+  'ALI=F':(usd) => parseFloat((usd * USD_TO_INR / 0.453592).toFixed(2)),        // Aluminium: USD/lb → INR/kg
+  'NI=F': (usd) => parseFloat((usd * USD_TO_INR / 0.453592).toFixed(2)),        // Nickel: USD/lb → INR/kg
+};
+
 function formatMarketCap(marketCap) {
   if (!marketCap) return 'N/A';
   const crores = marketCap / 10000000;
@@ -173,27 +193,49 @@ async function fetchLiveIndexPrice(indexName) {
     
     if (response.data?.chart?.result?.[0]) {
       const result = response.data.chart.result[0];
-      const meta = result.meta;
-      
-      const value = parseFloat(meta.regularMarketPrice?.toFixed(2));
-      const previousClose = parseFloat(meta.chartPreviousClose?.toFixed(2));
-      const change = parseFloat((value - previousClose).toFixed(2));
+      const meta   = result.meta;
+
+      const rawPrice = parseFloat(meta.regularMarketPrice?.toFixed(2));
+      const rawPrev  = parseFloat(meta.chartPreviousClose?.toFixed(2));
+      const rawHigh  = parseFloat(meta.regularMarketDayHigh?.toFixed(2));
+      const rawLow   = parseFloat(meta.regularMarketDayLow?.toFixed(2));
+      const rawOpen  = parseFloat(meta.regularMarketOpen?.toFixed(2));
+
+      // ─── Commodity INR Conversion ───────────────────────────────
+      // MCX_CONVERSIONS is defined at file top — USD → INR in MCX units
+      const convert = MCX_CONVERSIONS[yahooSymbol];
+
+      // Apply conversion only for commodity symbols
+      const value         = convert ? convert(rawPrice) : rawPrice;
+      const previousClose = convert ? convert(rawPrev)  : rawPrev;
+      const dayHigh       = convert ? convert(rawHigh)  : rawHigh;
+      const dayLow        = convert ? convert(rawLow)   : rawLow;
+      const openValue     = convert ? convert(rawOpen)  : rawOpen;
+
+      const change           = parseFloat((value - previousClose).toFixed(2));
       const percentageChange = parseFloat(((change / previousClose) * 100).toFixed(2));
-      
+
       const data = {
-        name: indexKey,
+        name:             indexKey,
         displayName,
         value,
         previousClose,
         change,
         percentageChange,
-        dayHigh: parseFloat(meta.regularMarketDayHigh?.toFixed(2)),
-        dayLow: parseFloat(meta.regularMarketDayLow?.toFixed(2)),
-        openValue: parseFloat(meta.regularMarketOpen?.toFixed(2)),
+        dayHigh,
+        dayLow,
+        openValue,
+        // Extra context for commodity indices
+        ...(convert ? {
+          isCommodity:  true,
+          rawUsdPrice:  rawPrice,
+          usdToInr:     USD_TO_INR,
+        } : {}),
         lastUpdated: new Date()
       };
-      
-      console.log(`✅ ${displayName} @ ${value} (${percentageChange > 0 ? '+' : ''}${percentageChange}%)`);
+
+      const unit = yahooSymbol === 'GC=F' ? '/10g' : yahooSymbol === 'SI=F' ? '/kg' : yahooSymbol.endsWith('=F') ? '/bbl' : '';
+      console.log(`✅ ${displayName} @ ${convert ? '₹' : ''}${value}${unit} (${percentageChange > 0 ? '+' : ''}${percentageChange}%)`);
       return data;
     }
     return null;
@@ -234,25 +276,33 @@ async function fetchLiveIndexPrice(indexName) {
 //   }
 // }
 
-// In services/liveDataService.js
-const { updateFirebase } = require('./firebaseService');
-const { sanitizeFilter } = require('mongoose');
-
+// updateStockPrice — saves to MongoDB only
+// Firebase push is handled by firebaseUpdateJob.js (fo_contracts path)
 async function updateStockPrice(symbol) {
   const liveData = await fetchLiveStockPrice(symbol);
   if (!liveData) {
-      return { success: false, message: `Failed for ${symbol}` };
-    }
-     await updateFirebase(`stocks/${symbol}`,liveData)
-    const stock = await Stock.findOneAndUpdate(
-      { symbol: liveData.symbol },
-      liveData,
-      { new: true, upsert: true }
-    );
-  
-  // 2. Push to Firebase (for real-time sync)
- 
-  
+    return { success: false, message: `Failed for ${symbol}` };
+  }
+
+  // ── Ask / Bid auto-calculate from live price ──
+  const cp    = sanitizeNumber(liveData.currentPrice);
+  const tick  = 0.05;
+  const pct   = cp < 500 ? 0.0004 : cp < 5000 ? 0.000125 : 0.000075;
+  const half  = cp * pct;
+  const askPrice = parseFloat((Math.round((cp + half) / tick) * tick).toFixed(2));
+  const bidPrice = parseFloat((Math.round((cp - half) / tick) * tick).toFixed(2));
+  const spread   = parseFloat((askPrice - bidPrice).toFixed(2));
+
+  // Merge ask/bid into liveData
+  const stockData = { ...liveData, askPrice, bidPrice, spread };
+
+  // Save to MongoDB (contractType: SPOT — upsert)
+  await Stock.findOneAndUpdate(
+    { symbol: stockData.symbol },
+    { ...stockData, contractType: 'SPOT' },
+    { new: true, upsert: true }
+  );
+
   return { success: true };
 }
 // ============================================
@@ -349,13 +399,76 @@ function getAvailableIndices() {
   }));
 }
 
+
+// ============================================
+// MCX LIVE PRICE FETCHER
+// Yahoo Finance se commodity price fetch karo
+// Automatic USD → INR conversion with MCX_CONVERSIONS
+// ============================================
+async function fetchMcxLivePrice(yahooSymbol) {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}`;
+    const response = await axios.get(url, {
+      params: { interval: '1d', range: '1d' },
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+
+    if (response.data?.chart?.result?.[0]) {
+      const meta = response.data.chart.result[0].meta;
+
+      const usdPrice    = parseFloat(meta.regularMarketPrice    || 0);
+      const usdPrev     = parseFloat(meta.chartPreviousClose    || usdPrice);
+      const usdHigh     = parseFloat(meta.regularMarketDayHigh  || usdPrice);
+      const usdLow      = parseFloat(meta.regularMarketDayLow   || usdPrice);
+      const usdOpen     = parseFloat(meta.regularMarketOpen     || usdPrice);
+
+      const convert = MCX_CONVERSIONS[yahooSymbol] || ((p) => parseFloat((p * USD_TO_INR).toFixed(2)));
+
+      const currentPrice  = convert(usdPrice);
+      const previousClose = convert(usdPrev);
+      const dayHigh       = convert(usdHigh);
+      const dayLow        = convert(usdLow);
+      const openPrice     = convert(usdOpen);
+      const priceChange   = parseFloat((currentPrice - previousClose).toFixed(2));
+      const pctChange     = previousClose > 0
+        ? parseFloat(((priceChange / previousClose) * 100).toFixed(2))
+        : 0;
+
+      console.log(`🥇 MCX ${yahooSymbol}: ₹${currentPrice} (${pctChange >= 0 ? '+' : ''}${pctChange}%)`);
+
+      return {
+        yahooSymbol,
+        currentPrice,
+        previousClose,
+        priceChange,
+        percentageChange: pctChange,
+        dayHigh,
+        dayLow,
+        openPrice,
+        volume:    parseInt(meta.regularMarketVolume || 0),
+        usdPrice,
+        usdToInr:  USD_TO_INR,
+        lastUpdated: new Date()
+      };
+    }
+    return null;
+  } catch (error) {
+    console.error(`❌ MCX fetch failed for ${yahooSymbol}:`, error.message);
+    return null;
+  }
+}
+
 module.exports = {
   fetchLiveStockPrice,
   fetchLiveIndexPrice,
+  fetchMcxLivePrice,
   updateStockPrice,
   updateIndexPrice,
   updateMultipleStocks,
   updateAllIndices,
   getAvailableIndices,
-  GLOBAL_INDICES
+  GLOBAL_INDICES,
+  MCX_CONVERSIONS,
+  USD_TO_INR,
 };

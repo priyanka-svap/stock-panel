@@ -481,11 +481,106 @@ async function seedContracts() {
       }
     }
     
+    // ===================================
+    // MCX CONTRACTS — Gold, Silver, Crude Oil, Base Metals
+    // Ye contracts MCX exchange pe trade hote hain
+    // ===================================
+    console.log('\nCreating MCX contracts...');
+
+    // MCX monthly expiry = last day of month (commodities ka alag expiry hota hai)
+    function getMcxMonthlyExpiries(count = 3) {
+      const expiries = [];
+      const now = new Date();
+      for (let i = 0; i < count; i++) {
+        // MCX expiry = 5th of next month (approximate, real expiry calendar se confirm karo)
+        const d = new Date(now.getFullYear(), now.getMonth() + i + 1, 5, 23, 55, 0);
+        expiries.push(d);
+      }
+      return expiries;
+    }
+
+    const mcxExpiries   = getMcxMonthlyExpiries(3);
+    const mcxExpiryStr  = mcxExpiries.map(d => {
+      const m = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+      return `${m[d.getMonth()]}${d.getFullYear().toString().slice(-2)}`;
+    });
+
+    // MCX commodity config — approximate base prices (INR mein)
+    const MCX_CONFIG = [
+      // Gold
+      { symbol: 'GOLD',       name: 'Gold',            unit: '10g',    lotSize: 100,  basePrice: 89500,  category: 'PRECIOUS_METAL' },
+      { symbol: 'GOLDM',      name: 'Gold Mini',       unit: '10g',    lotSize: 10,   basePrice: 89500,  category: 'PRECIOUS_METAL' },
+      { symbol: 'GOLDPETAL',  name: 'Gold Petal',      unit: '1g',     lotSize: 1,    basePrice: 8950,   category: 'PRECIOUS_METAL' },
+      { symbol: 'GOLDGUINEA', name: 'Gold Guinea',     unit: '8g',     lotSize: 8,    basePrice: 71600,  category: 'PRECIOUS_METAL' },
+      // Silver
+      { symbol: 'SILVER',     name: 'Silver',          unit: '1kg',    lotSize: 30,   basePrice: 102000, category: 'PRECIOUS_METAL' },
+      { symbol: 'SILVERM',    name: 'Silver Mini',     unit: '1kg',    lotSize: 5,    basePrice: 102000, category: 'PRECIOUS_METAL' },
+      { symbol: 'SILVERMIC',  name: 'Silver Micro',    unit: '1kg',    lotSize: 1,    basePrice: 102000, category: 'PRECIOUS_METAL' },
+      // Energy
+      { symbol: 'CRUDEOIL',   name: 'Crude Oil',       unit: 'BBL',    lotSize: 100,  basePrice: 6200,   category: 'ENERGY' },
+      { symbol: 'CRUDEOILM',  name: 'Crude Oil Mini',  unit: 'BBL',    lotSize: 10,   basePrice: 6200,   category: 'ENERGY' },
+      { symbol: 'NATURALGAS', name: 'Natural Gas',     unit: 'MMBTU',  lotSize: 1250, basePrice: 280,    category: 'ENERGY' },
+      { symbol: 'NATURALGASM',name: 'Natural Gas Mini',unit: 'MMBTU',  lotSize: 250,  basePrice: 280,    category: 'ENERGY' },
+      // Base Metals
+      { symbol: 'COPPER',     name: 'Copper',          unit: 'kg',     lotSize: 2500, basePrice: 845,    category: 'BASE_METAL' },
+      { symbol: 'COPPERM',    name: 'Copper Mini',     unit: 'kg',     lotSize: 250,  basePrice: 845,    category: 'BASE_METAL' },
+      { symbol: 'ZINC',       name: 'Zinc',            unit: 'kg',     lotSize: 5000, basePrice: 265,    category: 'BASE_METAL' },
+      { symbol: 'ZINCMINI',   name: 'Zinc Mini',       unit: 'kg',     lotSize: 1000, basePrice: 265,    category: 'BASE_METAL' },
+      { symbol: 'LEAD',       name: 'Lead',            unit: 'kg',     lotSize: 5000, basePrice: 185,    category: 'BASE_METAL' },
+      { symbol: 'LEADMINI',   name: 'Lead Mini',       unit: 'kg',     lotSize: 1000, basePrice: 185,    category: 'BASE_METAL' },
+      { symbol: 'ALUMINIUM',  name: 'Aluminium',       unit: 'kg',     lotSize: 5000, basePrice: 235,    category: 'BASE_METAL' },
+      { symbol: 'ALUMINIUMM', name: 'Aluminium Mini',  unit: 'kg',     lotSize: 1000, basePrice: 235,    category: 'BASE_METAL' },
+      { symbol: 'NICKEL',     name: 'Nickel',          unit: 'kg',     lotSize: 1500, basePrice: 1425,   category: 'BASE_METAL' },
+      { symbol: 'NICKELM',    name: 'Nickel Mini',     unit: 'kg',     lotSize: 100,  basePrice: 1425,   category: 'BASE_METAL' },
+    ];
+
+    // MCX contracts create karo — next 3 monthly expiries ke liye
+    for (const cfg of MCX_CONFIG) {
+      for (let ei = 0; ei < mcxExpiries.length; ei++) {
+        const expiry     = mcxExpiries[ei];
+        const expiryStr  = mcxExpiryStr[ei];
+
+        // Days to expiry se basis premium calculate karo (commodities)
+        const daysToExp    = Math.max(0, Math.ceil((expiry - new Date()) / (1000 * 60 * 60 * 24)));
+        const annualRate   = 0.06; // commodity storage + financing cost
+        const premium      = cfg.basePrice * (daysToExp / 365) * annualRate;
+        const futurePrice  = parseFloat((cfg.basePrice + premium).toFixed(2));
+        const prevClose    = parseFloat((cfg.basePrice * 0.998).toFixed(2)); // slight discount as prev close
+        const priceChange  = parseFloat((futurePrice - prevClose).toFixed(2));
+        const pctChange    = parseFloat(((priceChange / prevClose) * 100).toFixed(2));
+
+        contracts.push({
+          symbol:           `${cfg.symbol}-${expiryStr}`,
+          companyName:      cfg.name,
+          contractType:     'FUTURE',
+          exchange:         'MCX',
+          baseSymbol:       cfg.symbol,
+          expiryDate:       expiry,
+          expiryString:     expiryStr,
+          lotSize:          cfg.lotSize,
+          currentPrice:     futurePrice,
+          previousClose:    prevClose,
+          priceChange:      priceChange,
+          percentageChange: pctChange,
+          dayHigh:          parseFloat((futurePrice * 1.005).toFixed(2)),
+          dayLow:           parseFloat((futurePrice * 0.995).toFixed(2)),
+          openPrice:        prevClose,
+          volume:           0,
+          openInterest:     0,
+          sector:           cfg.category,
+          industry:         'COMMODITY',
+          isActive:         true,
+        });
+      }
+    }
+
+    console.log(`🥇 MCX contracts prepared: ${MCX_CONFIG.length} symbols × ${mcxExpiries.length} expiries = ${MCX_CONFIG.length * mcxExpiries.length} contracts`);
+
     // Insert all contracts
-    console.log(`Creating ${contracts.length} contracts...`);
+    console.log(`\nInserting ${contracts.length} total contracts (NSE F&O + MCX)...`);
     await Stock.insertMany(contracts);
     
-    console.log('✅ Successfully created all F&O contracts!');
+    console.log('✅ Successfully created all F&O + MCX contracts!');
     console.log('\nSummary:');
     
     const summary = await Stock.aggregate([

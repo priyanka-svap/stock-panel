@@ -24,7 +24,7 @@ const positionSchema = new mongoose.Schema({
   },
   contractType: {
     type: String,
-    enum: ['SPOT', 'FUTURES', 'CE', 'PE'],
+    enum: ['SPOT', 'FUTURE', 'FUTURES', 'CE', 'PE'],
     default: 'SPOT'
   },
   expiryDate:  { type: Date },
@@ -349,6 +349,27 @@ positionSchema.virtual('tpDistance').get(function() {
   const tp = this.takeProfit || this.target;
   if (!tp || !this.currentPrice) return null;
   return Math.abs(this.currentPrice - tp);
+});
+
+// ─── Trading-side value helpers (for UI) ────────────────────────────────────
+// For LONG:  buy at entry, sell at mark/exit
+// For SHORT: sell at entry, buy back at mark/exit
+positionSchema.virtual('buyPrice').get(function() {
+  return this.positionType === 'SHORT' ? (this.currentPrice ?? null) : (this.entryPrice ?? null);
+});
+
+positionSchema.virtual('sellPrice').get(function() {
+  return this.positionType === 'SHORT' ? (this.entryPrice ?? null) : (this.currentPrice ?? null);
+});
+
+positionSchema.virtual('buyValue').get(function() {
+  if (this.positionType === 'SHORT') return this.currentValue ?? null;
+  return this.investmentValue ?? null;
+});
+
+positionSchema.virtual('sellValue').get(function() {
+  if (this.positionType === 'SHORT') return this.investmentValue ?? null;
+  return this.currentValue ?? null;
 });
 
 positionSchema.virtual('liquidationRiskLabel').get(function() {

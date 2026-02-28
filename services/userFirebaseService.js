@@ -161,6 +161,14 @@ async function syncSingleUserToFirebase(userId) {
       totalUnrealizedPnL += pnl;
       totalInvestment    += investedVal;
 
+      // Trading-side values (for UI)
+      // LONG:  buy at entry, sell at mark
+      // SHORT: sell at entry, buy back at mark
+      const buyPrice  = isLong ? (pos.entryPrice || 0) : markPrice;
+      const sellPrice = isLong ? markPrice : (pos.entryPrice || 0);
+      const buyValue  = isLong ? investedVal : currentVal;
+      const sellValue = isLong ? currentVal : investedVal;
+
       // ✅ Correct liquidation price
 
       const liqPrice = calcLiquidationPrice(pos,user.availableBalance);
@@ -186,6 +194,10 @@ async function syncSingleUserToFirebase(userId) {
         markPrice:        parseFloat((markPrice).toFixed(2)),
         investedValue:    parseFloat(investedVal.toFixed(2)),
         currentValue:     parseFloat(currentVal.toFixed(2)),
+        buyPrice:         parseFloat((buyPrice || 0).toFixed(2)),
+        sellPrice:        parseFloat((sellPrice || 0).toFixed(2)),
+        buyValue:         parseFloat((buyValue || 0).toFixed(2)),
+        sellValue:        parseFloat((sellValue || 0).toFixed(2)),
         pnl:              parseFloat(pnl.toFixed(2)),
         pnlPercentage:    parseFloat(pnlPct.toFixed(2)),
         marginUsed:       pos.marginUsed       || 0,
@@ -226,32 +238,58 @@ async function syncSingleUserToFirebase(userId) {
     const wlPriceMap = {};
     wlStocks.forEach(s => { wlPriceMap[s.symbol] = s; });
 
+    // Helper — full stock data object for Firebase watchlist
+    function buildWlEntry(sym, sp, addedAt) {
+      const cp   = parseFloat(sp.currentPrice || 0);
+      // Ask/Bid: use stored value OR auto-calculate fallback
+      let ask  = parseFloat(sp.askPrice || 0);
+      let bid  = parseFloat(sp.bidPrice || 0);
+      let sprd = parseFloat(sp.spread   || 0);
+      if (ask === 0 && cp > 0) {
+        const tick = 0.05;
+        const half = cp * (cp < 500 ? 0.0004 : cp < 5000 ? 0.000125 : 0.000075);
+        ask  = parseFloat((Math.round((cp + half) / tick) * tick).toFixed(2));
+        bid  = parseFloat((Math.round((cp - half) / tick) * tick).toFixed(2));
+        sprd = parseFloat((ask - bid).toFixed(2));
+      }
+      return {
+        symbol:           sym,
+        companyName:      sp.companyName      || sym,
+        exchange:         sp.exchange         || 'NSE',
+        sector:           sp.sector           || '',
+        contractType:     sp.contractType     || 'SPOT',
+        // ── Price ──
+        currentPrice:     cp,
+        openPrice:        parseFloat(sp.openPrice     || 0),
+        previousClose:    parseFloat(sp.previousClose || 0),
+        dayHigh:          parseFloat(sp.dayHigh       || 0),
+        dayLow:           parseFloat(sp.dayLow        || 0),
+        // ── Change ──
+        priceChange:      parseFloat(sp.priceChange      || 0),
+        percentageChange: parseFloat(sp.percentageChange || 0),
+        // ── Order Book ──
+        askPrice:         ask,
+        bidPrice:         bid,
+        spread:           sprd,
+        // ── Volume ──
+        volume:           parseFloat(sp.volume       || 0),
+        openInterest:     parseFloat(sp.openInterest || 0),
+        // ── Meta ──
+        addedAt:     addedAt || Date.now(),
+        lastUpdated: Date.now()
+      };
+    }
+
     wlItems.forEach(item => {
       if (item.stocks && Array.isArray(item.stocks)) {
         item.stocks.forEach(s => {
           if (!s.symbol) return;
           const sp = wlPriceMap[s.symbol] || {};
-          watchlistData[s.symbol] = {
-            symbol:           s.symbol,
-            companyName:      sp.companyName || s.symbol,
-            currentPrice:     parseFloat(sp.currentPrice || 0),
-            priceChange:      parseFloat(sp.priceChange || 0),
-            percentageChange: parseFloat(sp.percentageChange || 0),
-            addedAt:          s.addedAt || item.createdAt,
-            lastUpdated:      Date.now()
-          };
+          watchlistData[s.symbol] = buildWlEntry(s.symbol, sp, s.addedAt || item.createdAt);
         });
       } else if (item.symbol) {
         const sp = wlPriceMap[item.symbol] || {};
-        watchlistData[item.symbol] = {
-          symbol:           item.symbol,
-          companyName:      sp.companyName || item.symbol,
-          currentPrice:     parseFloat(sp.currentPrice || 0),
-          priceChange:      parseFloat(sp.priceChange || 0),
-          percentageChange: parseFloat(sp.percentageChange || 0),
-          addedAt:          item.createdAt,
-          lastUpdated:      Date.now()
-        };
+        watchlistData[item.symbol] = buildWlEntry(item.symbol, sp, item.createdAt);
       }
     });
 
