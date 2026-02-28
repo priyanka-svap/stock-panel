@@ -4,7 +4,7 @@
 // const Stock     = require('../models/Stock');
 const Watchlist  = require('../models/Watchlist');
 const auth        = require('../middleware/auth');
-// const { updateStockPrice, updateMultipleStocks } = require('../services/liveDataService');
+ const { updateStockPrice, updateMultipleStocks } = require('../services/liveDataService');
 
 // // Get all stocks with pagination and filters
 // router.get('/', async (req, res) => {
