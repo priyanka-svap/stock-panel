@@ -171,6 +171,14 @@ async function refreshFuturePricesFromSpot() {
         ? sanitizeNumber((priceChange / prevClose) * 100)
         : sanitizeNumber(spot.percentageChange);
 
+      // Ask/Bid calculate karo for this future
+      const _tick   = 0.05;
+      const _pct    = futurePrice < 500 ? 0.0004 : futurePrice < 5000 ? 0.000125 : 0.000075;
+      const _half   = futurePrice * _pct;
+      const _ask    = sanitizeNumber(Math.round((futurePrice + _half) / _tick) * _tick);
+      const _bid    = sanitizeNumber(Math.round((futurePrice - _half) / _tick) * _tick);
+      const _spread = sanitizeNumber(_ask - _bid);
+
       bulkOps.push({
         updateOne: {
           filter: { symbol: contract.symbol },
@@ -184,6 +192,9 @@ async function refreshFuturePricesFromSpot() {
               openPrice:        sanitizeNumber(contract.openPrice || spot.openPrice || futurePrice),
               previousClose:    prevClose,
               volume:           sanitizeNumber(contract.volume || spot.volume),
+              askPrice:         _ask,
+              bidPrice:         _bid,
+              spread:           _spread,
               lastUpdated:      new Date()
             }
           }
@@ -246,21 +257,39 @@ async function updateFutureContracts() {
       const isNew = !existingFoKeys[key];
       if (isNew) newCount++; else updateCount++;
 
-      // ✅ Admin panel ke exact required keys
+      // Ask/Bid calculate — stored value use karo ya fresh calculate karo
+      const _cp2    = sanitizeNumber(contract.currentPrice);
+      const _tick2  = 0.05;
+      const _pct2   = _cp2 < 500 ? 0.0004 : _cp2 < 5000 ? 0.000125 : 0.000075;
+      const _half2  = _cp2 * _pct2;
+      // Stored value prefer karo (bulkOps ne abhi save kiya) — fallback calculate karo
+      const _ask2   = sanitizeNumber(contract.askPrice) || sanitizeNumber(Math.round((_cp2 + _half2) / _tick2) * _tick2);
+      const _bid2   = sanitizeNumber(contract.bidPrice) || sanitizeNumber(Math.round((_cp2 - _half2) / _tick2) * _tick2);
+      const _sprd2  = sanitizeNumber(contract.spread)   || sanitizeNumber(_ask2 - _bid2);
+
+      // ✅ Admin panel + app ke liye full required keys
       updates[`fo_contracts/${key}`] = {
         symbol:           contract.symbol,
         companyName:      contract.companyName || contract.symbol,
-        currentPrice:     sanitizeNumber(contract.currentPrice),
+        exchange:         contract.exchange    || 'NSE',
+        baseSymbol:       contract.baseSymbol  || contract.symbol.split('-')[0],
+        expiryDate:       contract.expiryDate ? new Date(contract.expiryDate).toISOString().split('T')[0] : null,
+        lotSize:          contract.lotSize     || null,
+        daysToExpiry:     daysToExpiry,
+        currentPrice:     _cp2,
         priceChange:      sanitizeNumber(contract.priceChange),
         percentageChange: sanitizeNumber(contract.percentageChange),
+        previousClose:    sanitizeNumber(contract.previousClose),
         dayHigh:          sanitizeNumber(contract.dayHigh),
         dayLow:           sanitizeNumber(contract.dayLow),
-        daysToExpiry:     daysToExpiry,
-        baseSymbol:       contract.baseSymbol || contract.symbol.split('-')[0],
-        expiryDate:       contract.expiryDate ? new Date(contract.expiryDate).toISOString().split('T')[0] : null,
+        openPrice:        sanitizeNumber(contract.openPrice),
+        volume:           sanitizeNumber(contract.volume),
+        openInterest:     sanitizeNumber(contract.openInterest),
+        askPrice:         _ask2,   // ✅ ALWAYS present
+        bidPrice:         _bid2,   // ✅ ALWAYS present
+        spread:           _sprd2,  // ✅ ALWAYS present
         lastUpdated:      now
       };
-      // ❌ stocks/futures path REMOVED — admin panel use nahi karta
     });
 
     if (Object.keys(updates).length > 0) {
