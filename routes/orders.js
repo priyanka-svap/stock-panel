@@ -19,10 +19,82 @@ router.get('/', auth, async (req, res) => {
     if (status) query.status = status.toUpperCase();
 
     const [orders, total] = await Promise.all([
-      Order.find(query).sort({ createdAt: -1 }).limit(+limit).skip((+page - 1) * +limit),
+      Order.find(query).sort({ createdAt: -1 }).limit(+limit).skip((+page - 1) * +limit).lean(),
       Order.countDocuments(query)
     ]);
-    res.json({ success: true, data: orders, pagination: { total, page: +page, limit: +limit } });
+
+    // ── PnL enrichment ──
+    // COMPLETED orders ke liye current market price se unrealized/realized PnL calculate karo
+    const completedOrders = orders.filter(o => o.status === 'COMPLETED' && o.symbol);
+    let priceMap = {};
+
+    if (completedOrders.length > 0) {
+      const symbols = [...new Set(completedOrders.map(o => o.symbol))];
+      const stocks  = await Stock.find({
+        symbol:       { $in: symbols },
+        contractType: 'SPOT'
+      }, 'symbol currentPrice').lean();
+      stocks.forEach(s => { priceMap[s.symbol] = parseFloat(s.currentPrice) || 0; });
+    }
+
+    const enriched = orders.map(order => {
+      // Sirf COMPLETED orders ke liye PnL calculate karo
+      if (order.status !== 'COMPLETED') {
+        return { ...order, pnl: null, pnlPercent: null, currentMarketPrice: null };
+      }
+
+      const execPrice = parseFloat(order.executedPrice || order.price || 0);
+      const qty       = parseFloat(order.quantity || 0);
+      const brokerage = parseFloat(order.brokerage || 0);
+      const cmp       = priceMap[order.symbol] || 0; // current market price
+
+      let pnl        = null;
+      let pnlPercent = null;
+
+      if (execPrice > 0 && qty > 0) {
+        if (order.orderType === 'BUY') {
+          // LONG order — current price se unrealized PnL
+          const invested = execPrice * qty;
+          const current  = cmp > 0 ? cmp * qty : invested; // fallback to invested if no CMP
+          pnl        = parseFloat((current - invested - brokerage).toFixed(2));
+          pnlPercent = parseFloat(((pnl / invested) * 100).toFixed(2));
+        } else {
+          // SELL/SHORT order — agar close-position se aaya toh realizedPnL use karo
+          // Position se link hai toh position ki realizedPnL prefer karein
+          // Yahan basic calculation:
+          const invested = execPrice * qty;
+          const current  = cmp > 0 ? cmp * qty : invested;
+          pnl        = parseFloat((invested - current - brokerage).toFixed(2));
+          pnlPercent = parseFloat(((pnl / invested) * 100).toFixed(2));
+        }
+      }
+
+      return {
+        ...order,
+        currentMarketPrice: cmp || null,
+        pnl,
+        pnlPercent,
+        isProfitable: pnl !== null ? pnl >= 0 : null
+      };
+    });
+
+    // Summary stats
+    const completedWithPnl = enriched.filter(o => o.pnl !== null);
+    const totalPnl         = completedWithPnl.reduce((sum, o) => sum + (o.pnl || 0), 0);
+    const profitableOrders = completedWithPnl.filter(o => o.pnl > 0).length;
+
+    res.json({
+      success: true,
+      data:    enriched,
+      pagination: { total, page: +page, limit: +limit },
+      summary: {
+        totalOrders:      total,
+        completedOrders:  completedWithPnl.length,
+        totalPnl:         parseFloat(totalPnl.toFixed(2)),
+        profitableOrders,
+        losingOrders:     completedWithPnl.length - profitableOrders
+      }
+    });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }

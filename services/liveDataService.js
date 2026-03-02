@@ -91,80 +91,80 @@ async function fetchLiveStockPrice(symbol) {
 const GLOBAL_INDICES = {
   // Indian Indices
   'NIFTY50': { yahoo: '^NSEI', name: 'NIFTY 50' },
-  'NIFTY_50': { yahoo: '^NSEI', name: 'NIFTY 50' },
-  'SENSEX': { yahoo: '^BSESN', name: 'SENSEX' },
-  'BANKNIFTY': { yahoo: '^NSEBANK', name: 'BANK NIFTY' },
-  'BANK_NIFTY': { yahoo: '^NSEBANK', name: 'BANK NIFTY' },
-  'NIFTYIT': { yahoo: '^CNXIT', name: 'NIFTY IT' },
-  'NIFTY_IT': { yahoo: '^CNXIT', name: 'NIFTY IT' },
-  'NIFTYPHARMA': { yahoo: '^CNXPHARMA', name: 'NIFTY PHARMA' },
-  'NIFTY_PHARMA': { yahoo: '^CNXPHARMA', name: 'NIFTY PHARMA' },
-  'NIFTYFMCG': { yahoo: '^CNXFMCG', name: 'NIFTY FMCG' },
-  'NIFTY_FMCG': { yahoo: '^CNXFMCG', name: 'NIFTY FMCG' },
-  'NIFTYAUTO': { yahoo: '^CNXAUTO', name: 'NIFTY AUTO' },
-  'NIFTY_AUTO': { yahoo: '^CNXAUTO', name: 'NIFTY AUTO' },
-  'NIFTYMETAL': { yahoo: '^CNXMETAL', name: 'NIFTY METAL' },
-  'NIFTY_METAL': { yahoo: '^CNXMETAL', name: 'NIFTY METAL' },
-  'NIFTYREALTY': { yahoo: '^CNXREALTY', name: 'NIFTY REALTY' },
-  'NIFTY_REALTY': { yahoo: '^CNXREALTY', name: 'NIFTY REALTY' },
-  'NIFTYPSE': { yahoo: '^CNXPSE', name: 'NIFTY PSE' },
-  'NIFTY_PSE': { yahoo: '^CNXPSE', name: 'NIFTY PSE' },
-  'NIFTYMIDCAP': { yahoo: '^NSEMDCP50', name: 'NIFTY MIDCAP 50' },
-  'NIFTY_MIDCAP': { yahoo: '^NSEMDCP50', name: 'NIFTY MIDCAP 50' },
-  'NIFTYSMALLCAP': { yahoo: '^CNXSMALLCAP', name: 'NIFTY SMALLCAP' },
-  'NIFTY_SMALLCAP': { yahoo: '^CNXSMALLCAP', name: 'NIFTY SMALLCAP' },
+   'NIFTY_50': { yahoo: '^NSEI', name: 'NIFTY 50' },
+  // 'SENSEX': { yahoo: '^BSESN', name: 'SENSEX' },
+   'BANKNIFTY': { yahoo: '^NSEBANK', name: 'BANK NIFTY' },
+   'BANK_NIFTY': { yahoo: '^NSEBANK', name: 'BANK NIFTY' },
+  // 'NIFTYIT': { yahoo: '^CNXIT', name: 'NIFTY IT' },
+  // 'NIFTY_IT': { yahoo: '^CNXIT', name: 'NIFTY IT' },
+  // 'NIFTYPHARMA': { yahoo: '^CNXPHARMA', name: 'NIFTY PHARMA' },
+  // 'NIFTY_PHARMA': { yahoo: '^CNXPHARMA', name: 'NIFTY PHARMA' },
+  // 'NIFTYFMCG': { yahoo: '^CNXFMCG', name: 'NIFTY FMCG' },
+  // 'NIFTY_FMCG': { yahoo: '^CNXFMCG', name: 'NIFTY FMCG' },
+  // 'NIFTYAUTO': { yahoo: '^CNXAUTO', name: 'NIFTY AUTO' },
+  // 'NIFTY_AUTO': { yahoo: '^CNXAUTO', name: 'NIFTY AUTO' },
+  // 'NIFTYMETAL': { yahoo: '^CNXMETAL', name: 'NIFTY METAL' },
+  // 'NIFTY_METAL': { yahoo: '^CNXMETAL', name: 'NIFTY METAL' },
+  // 'NIFTYREALTY': { yahoo: '^CNXREALTY', name: 'NIFTY REALTY' },
+  // 'NIFTY_REALTY': { yahoo: '^CNXREALTY', name: 'NIFTY REALTY' },
+  // 'NIFTYPSE': { yahoo: '^CNXPSE', name: 'NIFTY PSE' },
+  // 'NIFTY_PSE': { yahoo: '^CNXPSE', name: 'NIFTY PSE' },
+  // 'NIFTYMIDCAP': { yahoo: '^NSEMDCP50', name: 'NIFTY MIDCAP 50' },
+  // 'NIFTY_MIDCAP': { yahoo: '^NSEMDCP50', name: 'NIFTY MIDCAP 50' },
+  // 'NIFTYSMALLCAP': { yahoo: '^CNXSMALLCAP', name: 'NIFTY SMALLCAP' },
+  // 'NIFTY_SMALLCAP': { yahoo: '^CNXSMALLCAP', name: 'NIFTY SMALLCAP' },
   
-  // US Indices
-  'DOW': { yahoo: '^DJI', name: 'DOW JONES' },
-  'DOW_JONES': { yahoo: '^DJI', name: 'DOW JONES' },
-  'SP500': { yahoo: '^GSPC', name: 'S&P 500' },
-  'S&P500': { yahoo: '^GSPC', name: 'S&P 500' },
-  'NASDAQ': { yahoo: '^IXIC', name: 'NASDAQ' },
-  'RUSSELL2000': { yahoo: '^RUT', name: 'RUSSELL 2000' },
+  // // US Indices
+  // 'DOW': { yahoo: '^DJI', name: 'DOW JONES' },
+  // 'DOW_JONES': { yahoo: '^DJI', name: 'DOW JONES' },
+  // 'SP500': { yahoo: '^GSPC', name: 'S&P 500' },
+  // 'S&P500': { yahoo: '^GSPC', name: 'S&P 500' },
+  // 'NASDAQ': { yahoo: '^IXIC', name: 'NASDAQ' },
+  // 'RUSSELL2000': { yahoo: '^RUT', name: 'RUSSELL 2000' },
   
-  // European Indices
-  'FTSE': { yahoo: '^FTSE', name: 'FTSE 100' },
-  'FTSE100': { yahoo: '^FTSE', name: 'FTSE 100' },
-  'DAX': { yahoo: '^GDAXI', name: 'DAX' },
-  'CAC40': { yahoo: '^FCHI', name: 'CAC 40' },
-  'STOXX50': { yahoo: '^STOXX50E', name: 'EURO STOXX 50' },
-  'IBEX35': { yahoo: '^IBEX', name: 'IBEX 35' },
-  'FTSE_MIB': { yahoo: 'FTSEMIB.MI', name: 'FTSE MIB' },
+  // // European Indices
+  // 'FTSE': { yahoo: '^FTSE', name: 'FTSE 100' },
+  // 'FTSE100': { yahoo: '^FTSE', name: 'FTSE 100' },
+  // 'DAX': { yahoo: '^GDAXI', name: 'DAX' },
+  // 'CAC40': { yahoo: '^FCHI', name: 'CAC 40' },
+  // 'STOXX50': { yahoo: '^STOXX50E', name: 'EURO STOXX 50' },
+  // 'IBEX35': { yahoo: '^IBEX', name: 'IBEX 35' },
+  // 'FTSE_MIB': { yahoo: 'FTSEMIB.MI', name: 'FTSE MIB' },
   
-  // Asian Indices
-  'NIKKEI': { yahoo: '^N225', name: 'NIKKEI 225' },
-  'NIKKEI225': { yahoo: '^N225', name: 'NIKKEI 225' },
-  'HANGSENG': { yahoo: '^HSI', name: 'HANG SENG' },
-  'HANG_SENG': { yahoo: '^HSI', name: 'HANG SENG' },
-  'SHANGHAI': { yahoo: '000001.SS', name: 'SHANGHAI COMPOSITE' },
-  'SHANGHAI_COMPOSITE': { yahoo: '000001.SS', name: 'SHANGHAI COMPOSITE' },
-  'KOSPI': { yahoo: '^KS11', name: 'KOSPI' },
-  'TAIWAN': { yahoo: '^TWII', name: 'TAIWAN WEIGHTED' },
-  'STRAITS_TIMES': { yahoo: '^STI', name: 'STRAITS TIMES' },
-  'ASX200': { yahoo: '^AXJO', name: 'ASX 200' },
+  // // Asian Indices
+  // 'NIKKEI': { yahoo: '^N225', name: 'NIKKEI 225' },
+  // 'NIKKEI225': { yahoo: '^N225', name: 'NIKKEI 225' },
+  // 'HANGSENG': { yahoo: '^HSI', name: 'HANG SENG' },
+  // 'HANG_SENG': { yahoo: '^HSI', name: 'HANG SENG' },
+  // 'SHANGHAI': { yahoo: '000001.SS', name: 'SHANGHAI COMPOSITE' },
+  // 'SHANGHAI_COMPOSITE': { yahoo: '000001.SS', name: 'SHANGHAI COMPOSITE' },
+  // 'KOSPI': { yahoo: '^KS11', name: 'KOSPI' },
+  // 'TAIWAN': { yahoo: '^TWII', name: 'TAIWAN WEIGHTED' },
+  // 'STRAITS_TIMES': { yahoo: '^STI', name: 'STRAITS TIMES' },
+  // 'ASX200': { yahoo: '^AXJO', name: 'ASX 200' },
   
-  // Other Global Indices
-  'BOVESPA': { yahoo: '^BVSP', name: 'BOVESPA' },
-  'BRAZIL': { yahoo: '^BVSP', name: 'BOVESPA' },
-  'MERVAL': { yahoo: '^MERV', name: 'MERVAL' },
-  'MEXICO': { yahoo: '^MXX', name: 'IPC MEXICO' },
-  'JSE': { yahoo: '^J203.JO', name: 'JSE TOP 40' },
-  'SOUTH_AFRICA': { yahoo: '^J203.JO', name: 'JSE TOP 40' },
+  // // Other Global Indices
+  // 'BOVESPA': { yahoo: '^BVSP', name: 'BOVESPA' },
+  // 'BRAZIL': { yahoo: '^BVSP', name: 'BOVESPA' },
+  // 'MERVAL': { yahoo: '^MERV', name: 'MERVAL' },
+  // 'MEXICO': { yahoo: '^MXX', name: 'IPC MEXICO' },
+  // 'JSE': { yahoo: '^J203.JO', name: 'JSE TOP 40' },
+  // 'SOUTH_AFRICA': { yahoo: '^J203.JO', name: 'JSE TOP 40' },
   
-  // Commodity Indices
-  'GOLD': { yahoo: 'GC=F', name: 'GOLD' },
-  'SILVER': { yahoo: 'SI=F', name: 'SILVER' },
-  'CRUDE_OIL': { yahoo: 'CL=F', name: 'CRUDE OIL' },
-  'BRENT_OIL': { yahoo: 'BZ=F', name: 'BRENT OIL' },
-  'NATURAL_GAS': { yahoo: 'NG=F', name: 'NATURAL GAS' },
+  // // Commodity Indices
+  // 'GOLD': { yahoo: 'GC=F', name: 'GOLD' },
+  // 'SILVER': { yahoo: 'SI=F', name: 'SILVER' },
+  // 'CRUDE_OIL': { yahoo: 'CL=F', name: 'CRUDE OIL' },
+  // 'BRENT_OIL': { yahoo: 'BZ=F', name: 'BRENT OIL' },
+  // 'NATURAL_GAS': { yahoo: 'NG=F', name: 'NATURAL GAS' },
   
-  // Currency Indices
-  'DXY': { yahoo: 'DX-Y.NYB', name: 'US DOLLAR INDEX' },
-  'DOLLAR_INDEX': { yahoo: 'DX-Y.NYB', name: 'US DOLLAR INDEX' },
+  // // Currency Indices
+  // 'DXY': { yahoo: 'DX-Y.NYB', name: 'US DOLLAR INDEX' },
+  // 'DOLLAR_INDEX': { yahoo: 'DX-Y.NYB', name: 'US DOLLAR INDEX' },
   
-  // Crypto Indices
-  'BITCOIN': { yahoo: 'BTC-USD', name: 'BITCOIN' },
-  'ETHEREUM': { yahoo: 'ETH-USD', name: 'ETHEREUM' }
+  // // Crypto Indices
+  // 'BITCOIN': { yahoo: 'BTC-USD', name: 'BITCOIN' },
+  // 'ETHEREUM': { yahoo: 'ETH-USD', name: 'ETHEREUM' }
 };
 
 // ============================================
@@ -362,21 +362,22 @@ async function updateMultipleStocks(symbols) {
 async function updateAllIndices() {
   // Default indices to update
   const defaultIndices = [
+    'NIFTY50','BANKNIFTY'
     // Indian
-    'NIFTY50', 'SENSEX', 'BANKNIFTY', 'NIFTYIT', 
-    'NIFTYPHARMA', 'NIFTYFMCG', 'NIFTYAUTO',
+    // 'NIFTY50', 'SENSEX', 'BANKNIFTY', 'NIFTYIT', 
+    // 'NIFTYPHARMA', 'NIFTYFMCG', 'NIFTYAUTO',
     
-    // US
-    'DOW', 'SP500', 'NASDAQ',
+    // // US
+    // 'DOW', 'SP500', 'NASDAQ',
     
-    // European
-    'FTSE', 'DAX', 'CAC40',
+    // // European
+    // 'FTSE', 'DAX', 'CAC40',
     
-    // Asian
-    'NIKKEI', 'HANGSENG', 'SHANGHAI',
+    // // Asian
+    // 'NIKKEI', 'HANGSENG', 'SHANGHAI',
     
-    // Commodities
-    'GOLD', 'SILVER', 'CRUDE_OIL'
+    // // Commodities
+    // 'GOLD', 'SILVER', 'CRUDE_OIL'
   ];
   
   const results = [];
