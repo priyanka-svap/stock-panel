@@ -235,11 +235,8 @@ async function syncSingleUserToFirebase(userId) {
       }
     });
 
-    // ✅ contractType: 'SPOT' — FUTURE wale same symbol se price 0 na aaye
-    const wlStocks = await Stock.find({
-      symbol:       { $in: wlSymbols },
-      contractType: 'SPOT'
-    }).lean();
+    // SPOT + FUTURE dono support — contractType filter nahi
+    const wlStocks = await Stock.find({ symbol: { $in: wlSymbols } }).lean();
 
     const wlPriceMap = {};
     wlStocks.forEach(s => { wlPriceMap[s.symbol] = s; });

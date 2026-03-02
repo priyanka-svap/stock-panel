@@ -89,7 +89,7 @@ router.get('/', auth, async (req, res) => {
     }
 
     const symbols = watchlist.stocks.map(s => s.symbol);
-    const stocks  = await Stock.find({ symbol: { $in: symbols }, contractType: 'SPOT' }).lean();
+    const stocks  = await Stock.find({ symbol: { $in: symbols } }).lean();
 
     // Return full stock data with addedAt
     const stockMap = {};
@@ -128,12 +128,12 @@ router.post('/add/:symbol', auth, async (req, res) => {
     }
 
     // 2. Fetch stock data for Firebase entry
-    // ✅ contractType: 'SPOT' — FUTURE wale same symbol se price 0 na aaye
-    const stock = await Stock.findOne({ symbol, contractType: 'SPOT' }).lean();
+    // SPOT + FUTURE dono support — contractType filter nahi
+    const stock = await Stock.findOne({ symbol }).lean();
 
     if (!stock) {
       // Stock MongoDB mein nahi mila — symbol check karo
-      console.warn(`⚠️  Watchlist ADD: Stock not found in DB for symbol: ${symbol} (contractType: SPOT)`);
+      console.warn(`⚠️  Watchlist ADD: Stock not found in DB for symbol: ${symbol}`);
       // Phir bhi watchlist mein add karo — price fields zero rahenge jab tak stock seed na ho
     } else {
       console.log(`📦 Stock found: ${symbol} | price: ₹${stock.currentPrice} | exchange: ${stock.exchange}`);
