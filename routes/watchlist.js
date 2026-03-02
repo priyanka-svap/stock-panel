@@ -128,7 +128,17 @@ router.post('/add/:symbol', auth, async (req, res) => {
     }
 
     // 2. Fetch stock data for Firebase entry
-    const stock   = await Stock.findOne({ symbol, contractType: 'SPOT' }).lean();
+    // ✅ contractType: 'SPOT' — FUTURE wale same symbol se price 0 na aaye
+    const stock = await Stock.findOne({ symbol, contractType: 'SPOT' }).lean();
+
+    if (!stock) {
+      // Stock MongoDB mein nahi mila — symbol check karo
+      console.warn(`⚠️  Watchlist ADD: Stock not found in DB for symbol: ${symbol} (contractType: SPOT)`);
+      // Phir bhi watchlist mein add karo — price fields zero rahenge jab tak stock seed na ho
+    } else {
+      console.log(`📦 Stock found: ${symbol} | price: ₹${stock.currentPrice} | exchange: ${stock.exchange}`);
+    }
+
     const addedAt = alreadyExists
       ? alreadyExists.addedAt
       : watchlist.stocks.find(s => s.symbol === symbol)?.addedAt || new Date();
@@ -138,7 +148,7 @@ router.post('/add/:symbol', auth, async (req, res) => {
     // 3. Instant Firebase push — market band ho ya open, fark nahi
     const fbOk = await fbSet(`users/${userId}/watchlist/${symbol}`, entry);
 
-    console.log(`📌 Watchlist ADD: ${userId} → ${symbol} | Firebase: ${fbOk ? '✅' : '⚠️ failed'}`);
+    console.log(`📌 Watchlist ADD: ${userId} → ${symbol} | price:₹${entry.currentPrice} | Firebase: ${fbOk ? '✅' : '⚠️ failed'}`);
 
     res.json({
       success: true,

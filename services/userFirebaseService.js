@@ -226,6 +226,7 @@ async function syncSingleUserToFirebase(userId) {
     const wlItems = await Watchlist.find({ userId }).lean();
     const watchlistData = {};
     const wlSymbols = [];
+
     wlItems.forEach(item => {
       if (item.stocks && Array.isArray(item.stocks)) {
         item.stocks.forEach(s => { if (s.symbol) wlSymbols.push(s.symbol); });
@@ -233,38 +234,65 @@ async function syncSingleUserToFirebase(userId) {
         wlSymbols.push(item.symbol);
       }
     });
-    // Fetch live prices for watchlist symbols (admin panel requires currentPrice, priceChange, percentageChange)
-    // ✅ FIX: contractType: 'SPOT' — same symbol ke FUTURE entry se price 0 na aaye
-    const wlStocks = await Stock.find({ symbol: { $in: wlSymbols }, contractType: 'SPOT' }).lean();
+
+    // ✅ contractType: 'SPOT' — FUTURE wale same symbol se price 0 na aaye
+    const wlStocks = await Stock.find({
+      symbol:       { $in: wlSymbols },
+      contractType: 'SPOT'
+    }).lean();
+
     const wlPriceMap = {};
     wlStocks.forEach(s => { wlPriceMap[s.symbol] = s; });
+
+    // ── Full stock data builder — same as watchlist.js buildWatchlistEntry ──
+    function _buildWlEntry(sym, sp, addedAt) {
+      const cp   = parseFloat(sp?.currentPrice  || 0);
+      const tick = (sp?.exchange === 'MCX') ? 0.1 : 0.05;
+
+      // ask/bid — stored value prefer, fallback calculate
+      let ask  = parseFloat(sp?.askPrice || 0);
+      let bid  = parseFloat(sp?.bidPrice || 0);
+      let sprd = parseFloat(sp?.spread   || 0);
+      if (ask === 0 && cp > 0) {
+        const half = cp * (cp < 500 ? 0.0004 : cp < 5000 ? 0.000125 : 0.000075);
+        ask  = parseFloat((Math.round((cp + half) / tick) * tick).toFixed(2));
+        bid  = parseFloat((Math.round((cp - half) / tick) * tick).toFixed(2));
+        sprd = parseFloat((ask - bid).toFixed(2));
+      }
+
+      return {
+        symbol:           sym,
+        companyName:      sp?.companyName      || sym,
+        exchange:         sp?.exchange         || 'NSE',
+        sector:           sp?.sector           || '',
+        contractType:     sp?.contractType     || 'SPOT',
+        currentPrice:     cp,
+        openPrice:        parseFloat(sp?.openPrice      || 0),
+        previousClose:    parseFloat(sp?.previousClose  || 0),
+        dayHigh:          parseFloat(sp?.dayHigh        || 0),
+        dayLow:           parseFloat(sp?.dayLow         || 0),
+        priceChange:      parseFloat(sp?.priceChange    || 0),
+        percentageChange: parseFloat(sp?.percentageChange || 0),
+        askPrice:         ask,
+        bidPrice:         bid,
+        spread:           sprd,
+        volume:           parseFloat(sp?.volume         || 0),
+        openInterest:     parseFloat(sp?.openInterest   || 0),
+        addedAt:          addedAt  || Date.now(),
+        lastUpdated:      Date.now()
+      };
+    }
 
     wlItems.forEach(item => {
       if (item.stocks && Array.isArray(item.stocks)) {
         item.stocks.forEach(s => {
           if (!s.symbol) return;
           const sp = wlPriceMap[s.symbol] || {};
-          watchlistData[s.symbol] = {
-            symbol:           s.symbol,
-            companyName:      sp.companyName || s.symbol,
-            currentPrice:     parseFloat(sp.currentPrice || 0),
-            priceChange:      parseFloat(sp.priceChange || 0),
-            percentageChange: parseFloat(sp.percentageChange || 0),
-            addedAt:          s.addedAt || item.createdAt,
-            lastUpdated:      Date.now()
-          };
+          watchlistData[s.symbol] = _buildWlEntry(s.symbol, sp, s.addedAt || item.createdAt);
         });
       } else if (item.symbol) {
         const sp = wlPriceMap[item.symbol] || {};
-        watchlistData[item.symbol] = {
-          symbol:           item.symbol,
-          companyName:      sp.companyName || item.symbol,
-          currentPrice:     parseFloat(sp.currentPrice || 0),
-          priceChange:      parseFloat(sp.priceChange || 0),
-          percentageChange: parseFloat(sp.percentageChange || 0),
-          addedAt:          item.createdAt,
-          lastUpdated:      Date.now()
-        };
+        watchlistData[item.symbol] = _buildWlEntry(item.symbol, sp, item.createdAt);
       }
     });
 
