@@ -339,9 +339,8 @@ async function updateIndices() {
 }
 
 // ─────────────────────────────────────────────────────
-// 4. WATCHLIST — Admin panel sirf symbol+addedAt use karta hai
-//    Live prices, dayHigh, dayLow etc. REMOVE — bandwidth save!
-//    userDataSyncJob already positions mein prices push karta hai
+// 4. WATCHLIST — Full stock data with live prices
+//    Har cycle mein MongoDB se latest prices fetch karke Firebase push karo
 // ─────────────────────────────────────────────────────
 async function updateAllUsersWatchlist() {
   try {
@@ -354,7 +353,19 @@ async function updateAllUsersWatchlist() {
 
     if (!allWatchlists.length) return;
 
-    // Group by userId
+    // Saare unique symbols collect karo — ek hi DB query
+    const allSymbols = new Set();
+    allWatchlists.forEach(wl => {
+      const arr = wl.stocks && Array.isArray(wl.stocks) ? wl.stocks : (wl.symbol ? [{ symbol: wl.symbol }] : []);
+      arr.forEach(s => { if (s.symbol) allSymbols.add(s.symbol); });
+    });
+
+    // MongoDB se latest prices fetch karo (no contractType filter — SPOT+FUTURE dono)
+    const stockDocs = await Stock.find({ symbol: { $in: [...allSymbols] } }).lean();
+    const stockMap  = {};
+    stockDocs.forEach(s => { stockMap[s.symbol] = s; });
+
+    // Group watchlists by userId
     const wlByUser = {};
     allWatchlists.forEach(wl => {
       const uid = wl.userId.toString();
@@ -375,14 +386,41 @@ async function updateAllUsersWatchlist() {
         stocksArr.forEach(item => {
           if (!item.symbol) return;
           const symKey = safeKey(item.symbol);
-          // ✅ Sirf admin panel ke required keys: symbol, companyName, currentPrice, priceChange, percentageChange
-          // Live price market hours mein userDataSyncJob/positions se milti hai
-          // Watchlist mein full price data push karna unnecessary bandwidth tha
+          const sp     = stockMap[item.symbol] || {};
+          const cp     = sanitizeNumber(sp.currentPrice);
+          const tick   = sp.exchange === 'MCX' ? 0.1 : 0.05;
+
+          // ask/bid — stored ya calculate
+          let ask  = sanitizeNumber(sp.askPrice);
+          let bid  = sanitizeNumber(sp.bidPrice);
+          let sprd = sanitizeNumber(sp.spread);
+          if (ask === 0 && cp > 0) {
+            const half = cp * (cp < 500 ? 0.0004 : cp < 5000 ? 0.000125 : 0.000075);
+            ask  = sanitizeNumber(Math.round((cp + half) / tick) * tick);
+            bid  = sanitizeNumber(Math.round((cp - half) / tick) * tick);
+            sprd = sanitizeNumber(ask - bid);
+          }
+
           watchlistData[symKey] = {
-            symbol:      item.symbol,
-            companyName: item.companyName || item.symbol,
-            addedAt:     item.addedAt || wl.createdAt || Date.now(),
-            // currentPrice, priceChange, percentageChange — userFirebaseService syncSingleUserToFirebase se aayega
+            symbol:           item.symbol,
+            companyName:      sp.companyName      || item.symbol,
+            exchange:         sp.exchange         || 'NSE',
+            sector:           sp.sector           || '',
+            contractType:     sp.contractType     || 'SPOT',
+            currentPrice:     cp,
+            openPrice:        sanitizeNumber(sp.openPrice),
+            previousClose:    sanitizeNumber(sp.previousClose),
+            dayHigh:          sanitizeNumber(sp.dayHigh),
+            dayLow:           sanitizeNumber(sp.dayLow),
+            priceChange:      sanitizeNumber(sp.priceChange),
+            percentageChange: sanitizeNumber(sp.percentageChange),
+            askPrice:         ask,
+            bidPrice:         bid,
+            spread:           sprd,
+            volume:           sanitizeNumber(sp.volume),
+            openInterest:     sanitizeNumber(sp.openInterest),
+            addedAt:          item.addedAt || wl.createdAt || Date.now(),
+            lastUpdated:      Date.now()
           };
         });
       });
@@ -394,7 +432,7 @@ async function updateAllUsersWatchlist() {
 
     if (Object.keys(updates).length > 0) {
       await batchUpdateFirebase(updates);
-      console.log(`👁️  Watchlist: ${Object.keys(updates).length} users synced (metadata only)`);
+      console.log(`👁️  Watchlist: ${Object.keys(updates).length} users synced (full price data)`);
     }
   } catch (e) {
     console.error('❌ Watchlist sync error:', e.message);
@@ -484,7 +522,7 @@ function startContinuousUpdates() {
   console.log('   📈 Spot (MongoDB only) → every 10s');
   console.log('   🔮 fo_contracts        → every 15s (Firebase)');
   console.log('   🌐 Indices             → every 15s (Firebase)');
-  console.log('   👁️  Watchlist           → every 60s (metadata only)');
+  console.log('   👁️  Watchlist           → every 60s (full price data)');
   console.log('   ❌ stocks/spot path    → DISABLED\n');
 }
 
